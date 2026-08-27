@@ -16,7 +16,7 @@ class P2PApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
 
-        # Connected State
+        # Connected States
         self.connected_user = ""
 
         # ----------------- SIDEBAR -----------------
