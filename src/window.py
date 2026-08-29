@@ -1,13 +1,15 @@
 import customtkinter as ctk
 from tkinter import filedialog
+from src.controller import XenderController
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 
 class P2PApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, username):
         super().__init__()
+        self.controller = XenderController(self, username)
         self.title("P2P File Transfer")
         self.geometry("950x620")
         self.minsize(850, 500)
@@ -34,7 +36,7 @@ class P2PApp(ctk.CTk):
             text="💻  PC-PC Transfer",
             anchor="w",
             height=40,
-            command=self.show_main_selection,
+            command=self.show_main_selection,    # Call show main_selection
         )
         self.btn_pc_pc.grid(row=1, column=0, padx=15, pady=8, sticky="ew")
 
@@ -89,9 +91,9 @@ class P2PApp(ctk.CTk):
 # 1. MAIN SELECTION VIEW (Scan vs Broadcast)
 # -------------------------------------------------------------
 class MainSelectionView(ctk.CTkFrame):
-    def __init__(self, parent, controller: P2PApp):
+    def __init__(self, parent, app: P2PApp):
         super().__init__(parent, fg_color="transparent")
-        self.controller = controller
+        self.app = app
         self.grid_columnconfigure((0, 1), weight=1)
         self.grid_rowconfigure(0, weight=1)
 
@@ -100,7 +102,7 @@ class MainSelectionView(ctk.CTkFrame):
             text="🎯\n\nScan for Devices\n\nFind available peers on your local network",
             font=ctk.CTkFont(size=16, weight="bold"),
             corner_radius=12,
-            command=lambda: controller.show_view(ScanningView),
+            command=self.on_scan_card,   
         )
         self.scan_card.grid(row=0, column=0, padx=20, pady=40, sticky="nsew")
 
@@ -109,18 +111,28 @@ class MainSelectionView(ctk.CTkFrame):
             text="📡\n\nBroadcast Availability\n\nMake your device visible to other peers",
             font=ctk.CTkFont(size=16, weight="bold"),
             corner_radius=12,
-            command=lambda: controller.show_view(BroadcastingView),
+            command=lambda: self.app.show_view(BroadcastingView),
         )
         self.broadcast_card.grid(row=0, column=1, padx=20, pady=40, sticky="nsew")
+
+    def on_scan_card(self):
+        """Switch from main view to scanning view"""
+        self.app.show_view(ScanningView)
+        app.controller.run_scan()
+
+    def on_broadcast_card(self):
+        """Switch from main view to broadcasting view"""
+        self.app.show_view(ScanningView)
+        app.controller.run_broadcast()
 
 
 # -------------------------------------------------------------
 # 2. SCANNING VIEW
 # -------------------------------------------------------------
 class ScanningView(ctk.CTkFrame):
-    def __init__(self, parent, controller: P2PApp):
+    def __init__(self, parent, app: P2PApp):
         super().__init__(parent, fg_color="transparent")
-        self.controller = controller
+        self.app = app
         self.device_rows = []
 
         self.header = ctk.CTkLabel(self, text="Scanning for Devices...", font=ctk.CTkFont(size=22, weight="bold"))
@@ -161,21 +173,26 @@ class ScanningView(ctk.CTkFrame):
 
     def handle_connect(self, active_btn, device_name):
         for item in self.device_rows:
+            # if item["button"] != active_btn:
+            #     item["button"].configure(state="disabled", fg_color="#333333")
+            #     item["frame"].configure(fg_color="#1e1e1e")
+            # else:
+            #     item["button"].configure(text="Connecting...", state="disabled")
             if item["button"] != active_btn:
-                item["button"].configure(state="disabled", fg_color="#333333")
-                item["frame"].configure(fg_color="#1e1e1e")
+                item["button"].configure(state="disabled")
             else:
-                item["button"].configure(text="Connecting...", state="disabled")
-        self.after(600, lambda: self.controller.set_connected_user(device_name))
+                item["button"].configure(state="disabled", fg_color="#0400FC")
+                # item["frame"].configure(text="Connecting...", fg_color="#4C02F8")
+        self.after(600, lambda: self.app.set_connected_user(device_name))
 
 
 # -------------------------------------------------------------
 # 3. BROADCASTING VIEW
 # -------------------------------------------------------------
 class BroadcastingView(ctk.CTkFrame):
-    def __init__(self, parent, controller: P2PApp):
+    def __init__(self, parent, app: P2PApp):
         super().__init__(parent, fg_color="transparent")
-        self.controller = controller
+        self.app = app
 
         self.header = ctk.CTkLabel(self, text="Broadcasting...", font=ctk.CTkFont(size=22, weight="bold"))
         self.header.pack(pady=(10, 5), anchor="w")
@@ -200,7 +217,7 @@ class BroadcastingView(ctk.CTkFrame):
 
         btn_accept = ctk.CTkButton(
             row, text="Accept", width=100,
-            command=lambda: self.controller.set_connected_user(requester_name),
+            command=lambda: self.app.set_connected_user(requester_name),
         )
         btn_accept.pack(side="right", padx=15, pady=12)
 
@@ -209,9 +226,9 @@ class BroadcastingView(ctk.CTkFrame):
 # 4. CONNECTED TRANSFER VIEW (Tabs for Sending & Receiving)
 # -------------------------------------------------------------
 class ConnectedTransferView(ctk.CTkFrame):
-    def __init__(self, parent, controller: P2PApp):
+    def __init__(self, parent, app: P2PApp):
         super().__init__(parent, fg_color="transparent")
-        self.controller = controller
+        self.app = app
 
         # Header Status
         self.lbl_connected = ctk.CTkLabel(
@@ -296,5 +313,5 @@ class ConnectedTransferView(ctk.CTkFrame):
 
 
 if __name__ == "__main__":
-    app = P2PApp()
+    app = P2PApp("smartcode")
     app.mainloop()
