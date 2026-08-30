@@ -86,7 +86,8 @@ class P2PApp(ctk.CTk):
         transfer_view.update_header(username)
         self.show_view(ConnectedTransferView)
 
-
+    def refresh_scan_Devices(self, devices):
+        self.frames[ScanningView].display_devices(devices)
 # -------------------------------------------------------------
 # 1. MAIN SELECTION VIEW (Scan vs Broadcast)
 # -------------------------------------------------------------
@@ -111,7 +112,7 @@ class MainSelectionView(ctk.CTkFrame):
             text="📡\n\nBroadcast Availability\n\nMake your device visible to other peers",
             font=ctk.CTkFont(size=16, weight="bold"),
             corner_radius=12,
-            command=lambda: self.app.show_view(BroadcastingView),
+            command=self.on_broadcast_card,
         )
         self.broadcast_card.grid(row=0, column=1, padx=20, pady=40, sticky="nsew")
 
@@ -144,10 +145,15 @@ class ScanningView(ctk.CTkFrame):
         self.device_list_frame = ctk.CTkScrollableFrame(self, corner_radius=8)
         self.device_list_frame.pack(fill="both", expand=True, pady=10)
 
+    def display_devices(self, devices): 
+        self.devices = devices
+
     def on_show(self):
         self.clear_devices()
-        mock_devices = ["Laptop-Beta (192.168.1.12)", "Workstation-Gamma (192.168.1.45)", "NUC-Delta (192.168.1.89)"]
-        for dev in mock_devices:
+        # devices = ["Laptop-Beta (192.168.1.12)", "Workstation-Gamma (192.168.1.45)", "NUC-Delta (192.168.1.89)"]
+        # for dev in devices:
+        #     self.add_discovered_device(dev)
+        for dev in self.devices:
             self.add_discovered_device(dev)
 
     def clear_devices(self):
@@ -173,15 +179,10 @@ class ScanningView(ctk.CTkFrame):
 
     def handle_connect(self, active_btn, device_name):
         for item in self.device_rows:
-            # if item["button"] != active_btn:
-            #     item["button"].configure(state="disabled", fg_color="#333333")
-            #     item["frame"].configure(fg_color="#1e1e1e")
-            # else:
-            #     item["button"].configure(text="Connecting...", state="disabled")
             if item["button"] != active_btn:
                 item["button"].configure(state="disabled")
             else:
-                item["button"].configure(state="disabled", fg_color="#0400FC")
+                item["button"].configure(state="disabled", fg_color="#0082FC")
                 # item["frame"].configure(text="Connecting...", fg_color="#4C02F8")
         self.after(600, lambda: self.app.set_connected_user(device_name))
 
