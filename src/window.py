@@ -1,4 +1,5 @@
 import customtkinter as ctk
+# import queue
 from tkinter import filedialog
 from src.controller import XenderController
 
@@ -10,7 +11,7 @@ class P2PApp(ctk.CTk):
     def __init__(self, username):
         super().__init__()
         self.controller = XenderController(self, username)
-        self.title("P2P File Transfer")
+        self.title("ZENDER - P2P File Transfer")
         self.geometry("950x620")
         self.minsize(850, 500)
 
@@ -81,15 +82,21 @@ class P2PApp(ctk.CTk):
         self.show_view(MainSelectionView)
 
     def set_connected_user(self, username: str):
+        self.controller.connect()   # <- Intiate connection
         self.connected_user = username
         transfer_view = self.frames[ConnectedTransferView]
         transfer_view.update_header(username)
         self.show_view(ConnectedTransferView)
 
-    def refresh_scan_Devices(self, devices):
+    def refresh_scan_devices(self, devices):
+        devices_list = []
+        for name, addr in devices.items():
+            devices_list.append(name + " " + (addr[0]))
         self.frames[ScanningView].display_devices(devices)
+
+
 # -------------------------------------------------------------
-# 1. MAIN SELECTION VIEW (Scan vs Broadcast)
+#  MAIN SELECTION VIEW (Scan vs Broadcast)
 # -------------------------------------------------------------
 class MainSelectionView(ctk.CTkFrame):
     def __init__(self, parent, app: P2PApp):
@@ -117,24 +124,27 @@ class MainSelectionView(ctk.CTkFrame):
         self.broadcast_card.grid(row=0, column=1, padx=20, pady=40, sticky="nsew")
 
     def on_scan_card(self):
-        """Switch from main view to scanning view"""
-        self.app.show_view(ScanningView)
+        """Switch from main view to scanning view
+            and call controller to start scanning"""
         app.controller.run_scan()
+        self.app.show_view(ScanningView)
 
     def on_broadcast_card(self):
-        """Switch from main view to broadcasting view"""
-        self.app.show_view(ScanningView)
+        """Switch from main view to broadcasting view
+            and call the controller to start broadcasting"""
         app.controller.run_broadcast()
+        self.app.show_view(BroadcastingView)
 
 
 # -------------------------------------------------------------
-# 2. SCANNING VIEW
+# SCANNING VIEW
 # -------------------------------------------------------------
 class ScanningView(ctk.CTkFrame):
     def __init__(self, parent, app: P2PApp):
         super().__init__(parent, fg_color="transparent")
         self.app = app
         self.device_rows = []
+        self.devices = {}
 
         self.header = ctk.CTkLabel(self, text="Scanning for Devices...", font=ctk.CTkFont(size=22, weight="bold"))
         self.header.pack(pady=(10, 5), anchor="w")
@@ -153,29 +163,33 @@ class ScanningView(ctk.CTkFrame):
         # devices = ["Laptop-Beta (192.168.1.12)", "Workstation-Gamma (192.168.1.45)", "NUC-Delta (192.168.1.89)"]
         # for dev in devices:
         #     self.add_discovered_device(dev)
-        for dev in self.devices:
-            self.add_discovered_device(dev)
+        if self.devices:
+            for dev_name, dev_addr in self.devices.items():
+                self.add_discovered_device((dev_name, dev_addr))
 
     def clear_devices(self):
         for widget in self.device_list_frame.winfo_children():
             widget.destroy()
         self.device_rows.clear()
 
-    def add_discovered_device(self, device_name: str):
+    def add_discovered_device(self, dev_info: str):
+        dev_name = dev_info[0]
+        dev_addr = dev_info[1]
+
         row = ctk.CTkFrame(self.device_list_frame)
         row.pack(fill="x", pady=5, padx=5)
 
-        lbl = ctk.CTkLabel(row, text=f"💻  {device_name}", font=ctk.CTkFont(size=14))
+        lbl = ctk.CTkLabel(row, text=f"💻  {dev_name[0] ({dev_addr})}", font=ctk.CTkFont(size=14))
         lbl.pack(side="left", padx=15, pady=12)
 
         btn = ctk.CTkButton(
             row, text="Connect", width=100,
-            command=lambda b=None, r=row, name=device_name: self.handle_connect(r, name),
+            command=lambda r=row, name=dev_name: self.handle_connect(r, name),
         )
-        btn.configure(command=lambda b=btn, r=row, name=device_name: self.handle_connect(b, name))
+        btn.configure(command=lambda b=btn, r=row, name=dev_name: self.handle_connect(b, name))
         btn.pack(side="right", padx=15, pady=12)
 
-        self.device_rows.append({"frame": row, "button": btn, "name": device_name})
+        self.device_rows.append({"frame": row, "button": btn, "name": dev_name})
 
     def handle_connect(self, active_btn, device_name):
         for item in self.device_rows:
@@ -185,7 +199,7 @@ class ScanningView(ctk.CTkFrame):
                 item["button"].configure(state="disabled", fg_color="#0082FC")
                 # item["frame"].configure(text="Connecting...", fg_color="#4C02F8")
         self.after(600, lambda: self.app.set_connected_user(device_name))
-
+        
 
 # -------------------------------------------------------------
 # 3. BROADCASTING VIEW
