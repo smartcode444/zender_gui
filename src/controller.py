@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import queue
 import socket
 import os
 from dataclasses import dataclass
@@ -20,8 +21,10 @@ class XenderController():
         self.app = app
         self.username = username
         self.running = True
-        self.scanning = True
-        self.broadcasting= True
+        self.stop_scanning = threading.Event()
+        self.stop_broadcasting = threading.Event()
+        self.scanned_devices = queue.Queue()
+        self.scanners = queue.Queue()
         
     def scan(self):
         print(f"Scanning... {len(devices)} found")
@@ -32,15 +35,13 @@ class XenderController():
         print("Scanning for devices...\n")
 
         msg = b"I_SEE_U" + self.username.encode('utf-8')
-        while True:
+        while not self.stop_scanning.is_set():
             try:
-                if not self.scanning:
-                    break
                 name, addr = self.model.scan(msg, devices)
                 if name:
                     devices[name] = addr
                     print(f"Scanning... {len(devices)} found")
-                    self.app.refresh_scan_devices(devices)
+                    self.scanned_devices.put(devices)
             except socket.timeout:
                 continue
             except Exception as e:
@@ -48,38 +49,41 @@ class XenderController():
                 break
 
     def run_scan(self):
+        self.stop_scanning.clear()
         # scan_thread = threading.Thread(target=self.scan)
-        mock_devices = {"Device1": ("127.0.0.1", "8080"), "Device2": ("127.0.0.2", "7070")}
-        devices = self.get_devices(mock_devices)
-        self.app.refresh_scan_devices(devices)
+        self.scanned_devices = {"Device1": ("127.0.0.1", "8080"), "Device2": ("127.0.0.2", "7070")}
 
-    def get_devices(self, device: dict) -> dict:
-        """Append device name to addr and map the resulting string to device name"""
-        devices = {}
-        for dev_name, addr in device.items():
-            devices[f"{dev_name} ({addr[0]})"] = (dev_name, addr[0])
-        return devices
+        while not self.stop_scanning.is_set():
+            self.app.refresh_scan_devices(self.scanned_devices.get_nowait())
 
     def end_scan(self):
-        self.scanning = False
+        self.stop_scanning.set()
 
-    def run_broadcast(self):
+    def broadcast(self):
+        self.stop_broadcasting.clear()
         print("broadcasting...")
         self.model.init_bd_socks()
 
         username_bytes = self.username.encode('utf-8')
         message = bytes([len(username_bytes)]) + username_bytes + b"XENDER_DISCOVERY_REQUEST"
 
-        while True:
+        while self.stop_broadcasting.is_set():
             try:
-                if not self.broadcasting:
-                    break
-                self.model.broadcast(message)
+                dev = self.model.broadcast(message)
+                if dev:
+                    self.scanners = dev
             except socket.timeout:
                 continue
 
+    # def run_broadcas(self):
+
+
     def end_broadcast(self):
-        self.scanning = False
+        self.stop_broadcasting.set()
+
+
+# <-- REST OF THE CODE IS NOT MEANT TO BE USED -->
+
 
     async def run(self):
         while self.running:
