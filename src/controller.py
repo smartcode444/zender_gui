@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import socket
 import os
 from dataclasses import dataclass
@@ -14,22 +15,71 @@ async def async_key_pressed():
     pass
 
 class XenderController():
-    def __init__(self, window, username):
-        # self.model = NetworkManager(username)
-        self.view = window
+    def __init__(self, app, username):
+        self.model = NetworkManager(username)
+        self.app = app
         self.username = username
         self.running = True
+        self.scanning = True
+        self.broadcasting= True
+        
+    def scan(self):
+        print(f"Scanning... {len(devices)} found")
+        self.model.init_scan_socks()
+        devices = {}
+        msg    = b"I_SEE_U" + self.username.encode('utf-8')
+
+        print("Scanning for devices...\n")
+
+        msg = b"I_SEE_U" + self.username.encode('utf-8')
+        while True:
+            try:
+                if not self.scanning:
+                    break
+                name, addr = self.model.scan(msg, devices)
+                if name:
+                    devices[name] = addr
+                    print(f"Scanning... {len(devices)} found")
+                    self.app.refresh_scan_devices(devices)
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"[!]  Error scanning: {e}")
+                break
 
     def run_scan(self):
-        print("In scan")
-        print("Scanning...")
+        # scan_thread = threading.Thread(target=self.scan)
+        mock_devices = {"Device1": ("127.0.0.1", "8080"), "Device2": ("127.0.0.2", "7070")}
+        devices = self.get_devices(mock_devices)
+        self.app.refresh_scan_devices(devices)
+
+    def get_devices(self, device: dict) -> dict:
+        """Append device name to addr and map the resulting string to device name"""
+        devices = {}
+        for dev_name, addr in device.items():
+            devices[f"{dev_name} ({addr[0]})"] = (dev_name, addr[0])
+        return devices
+
+    def end_scan(self):
+        self.scanning = False
 
     def run_broadcast(self):
-        print("In broadcast")
         print("broadcasting...")
+        self.model.init_bd_socks()
 
+        username_bytes = self.username.encode('utf-8')
+        message = bytes([len(username_bytes)]) + username_bytes + b"XENDER_DISCOVERY_REQUEST"
 
+        while True:
+            try:
+                if not self.broadcasting:
+                    break
+                self.model.broadcast(message)
+            except socket.timeout:
+                continue
 
+    def end_broadcast(self):
+        self.scanning = False
 
     async def run(self):
         while self.running:
@@ -40,12 +90,12 @@ class XenderController():
                 msg    = b"I_SEE_U" + self.username.encode('utf-8')
                 spin_i = 0
 
-                # self.view.show_message(Back.BLUE + "Scanning for devices... press 'q' to stop\n")
+                # print("Scanning for devices... press 'q' to stop\n")
 
                 msg = b"I_SEE_U" + self.username.encode('utf-8')
                 while True:
                     # self.view.show_inline(
-                    #     f"{Back.BLUE}{SPINNER[spin_i % len(SPINNER)]}  Scanning... {len(devices)} found"
+                    #     f"{SPINNER[spin_i % len(SPINNER)]}  Scanning... {len(devices)} found"
                     # )
                     # spin_i += 1  
 
@@ -53,7 +103,7 @@ class XenderController():
                     user_key = self.view.get_input()
                     if user_key == 'q':
                         self.view.end_inline()        # move off spinner line
-                        # self.view.show_message(Back.RED + "[!]  Scanning stopped.")
+                        # print("[!]  Scanning stopped.")
                         break
 
                     try:
@@ -65,7 +115,7 @@ class XenderController():
                         continue
                     except Exception as e:
                         self.view.end_inline()
-                        # self.view.show_message(f"{Back.RED}[!]  Error scanning: {e}")
+                        # print(f"[!]  Error scanning: {e}")
                         break
 
                 self.view.end_inline()
@@ -76,26 +126,26 @@ class XenderController():
                     if idx == 'q':
                         continue
                     selected_name = list(devices.keys())[idx-1]
-                    # self.view.show_message(f"{Back.BLUE}Connecting to {selected_name}... (press 'q' to stop)")
+                    # print(f"Connecting to {selected_name}... (press 'q' to stop)")
                     while True:
                         user_key = self.view.get_input()
                         if user_key == 'q':
-                            # self.view.show_message(Back.RED + "\n[!] User refused connection")
+                            # print("\n[!] User refused connection")
                             break
                         try:
                             self.model.sc_connect(devices[selected_name][0])
-                            # self.view.show_message(Back.GREEN + f"[OK] Succesfully connected to {selected_name}")
+                            # print(Back.GREEN + f"[OK] Succesfully connected to {selected_name}")
                             await self.transfer_loop()
                             break
                         except socket.timeout:
                             continue
                         except Exception as e:
-                            # self.view.show_message(f"{Back.RED}[!] Error connecting to {selected_name}: {e}.")
+                            # print(f"[!] Error connecting to {selected_name}: {e}.")
                             break
 
 
             elif choice and choice == '2':
-                # self.view.show_message("\nBroadcasting to network... (press q to stop)")
+                # print("\nBroadcasting to network... (press q to stop)")
                 self.model.init_bd_socks()
                 username_bytes = self.username.encode('utf-8')
                 message = bytes([len(username_bytes)]) + username_bytes + b"XENDER_DISCOVERY_REQUEST"
@@ -103,21 +153,21 @@ class XenderController():
 
                 while True:
                     self.view.show_inline(
-                        # f"{Back.BLUE}{SPINNER[spin_i % len(SPINNER)]}  Broadcasting... (press q to stop)"
+                        # f"{SPINNER[spin_i % len(SPINNER)]}  Broadcasting... (press q to stop)"
                     )
                     spin_i += 1  
                     user_key = self.view.get_input()
                     if user_key == 'q':
-                        # self.view.show_message(Back.RED + "\nBroadcasting stopped by user")
+                        # print("\nBroadcasting stopped by user")
                         break
                     try:
                         if conn := self.model.broadcast(message):
-                            # choice = self.view.ask_yes_no(f"{Back.BLUE}\nAccept connection from '{conn}'")
+                            # choice = self.view.ask_yes_no(f"\nAccept connection from '{conn}'")
                             if   choice == "1":
                                 break
                             elif choice == "2":
-                                # self.view.show_message(Back.RED + "[!] User refused connection.")
-                                # self.view.show_message(Back.BLUE + "\nBroadcasting to network... (press q to go back to previous menu)")
+                                # print("[!] User refused connection.")
+                                # print("\nBroadcasting to network... (press q to go back to previous menu)")
                                 continue                                
                         else:
                             continue
@@ -126,11 +176,11 @@ class XenderController():
 
                 # Connect to device
                 if choice == "1":
-                    # self.view.show_message(f"{Back.BLUE}Connecting to {conn}... (press 'q' to stop)")
+                    # print(f"Connecting to {conn}... (press 'q' to stop)")
                     while True:
                         user_key = self.view.get_input()
                         if user_key == "q":
-                            # self.view.show_message(Back.RED + "\n[!] Connection stopped by user")
+                            # print("\n[!] Connection stopped by user")
                             break
                         try:
                             self.model.bd_connect()
@@ -139,7 +189,7 @@ class XenderController():
                         except socket.timeout:
                             continue
                         except Exception as e:
-                            # self.view.show_message(f"{Back.RED}[!] Error connecting to {conn}: {e}.")
+                            # print(f"[!] Error connecting to {conn}: {e}.")
                             break
                     
 
@@ -152,7 +202,7 @@ class XenderController():
             title="Zender -> Select files", initialdir=downloads_dir, parent=self.window
         )
         if not files:
-            # self.view.show_message(Back.RED + "No files selected.")
+            # print("No files selected.")
             return
         
         file_paths = sorted([
@@ -191,7 +241,7 @@ class XenderController():
         folders = self.ask_open_dirnames(title="Select Folders to Send", initialdir=downloads_dir)
 
         if not folders:
-            # self.view.show_message(Back.RED + "No folders selected.")
+            # print("No folders selected.")
             return
 
         rel_file_paths = []
@@ -227,7 +277,7 @@ class XenderController():
         #     title="Xender -> Select files",
         # )
         # if not file_paths:
-        #     self.view.show_message(Back.RED + "No files selected.")
+        #     print("No files selected.")
         #     return
 
         # Cannot send more than 99 files
@@ -237,7 +287,7 @@ class XenderController():
         elif 10 <= no_files <= 99:
             no_files_bytes = str(no_files).encode('utf-8')
         else:
-            # self.view.show_message(Back.RED + "Too many files selected (max 99).")
+            # print("Too many files selected (max 99).")
             return
         self.model.send_bytes(no_files_bytes)
 
@@ -245,7 +295,7 @@ class XenderController():
             name = os.path.basename(file_obj.name)
             path = file_obj.name
             filesize = os.path.getsize(file_obj.name)
-            self.view.show_message(f"\n[>>] Sending '{name}' ({filesize / (1024*1024):.1f} MB) (press 'q' to stop)")
+            print(f"\n[>>] Sending '{name}' ({filesize / (1024*1024):.1f} MB) (press 'q' to stop)")
 
             if file_obj.relative_path: rel_path = file_obj.relative_path
             else: rel_path = None
@@ -275,20 +325,20 @@ class XenderController():
                 if send_file in done:
                     result = send_file.result()
                     self.view.end_inline()      # move off progress bar line
-                    self.view.show_message(result)
+                    print(result)
                     
                 elif pressed_key in done:
-                    # self.view.show_message(Back.RED + "[!] Sending stopped by user.")
+                    # print("[!] Sending stopped by user.")
                     cancelled = True
                     break
 
                 elif watch_cancel in done:
-                    # self.view.show_message(Back.RED + "[!] Transfer cancelled by reciever.")
+                    # print("[!] Transfer cancelled by reciever.")
                     cancelled = True 
                     break
 
             except Exception as e:
-                # self.view.show_message(f"{Back.RED}[!] Error sending {name}: {e}")
+                # print(f"[!] Error sending {name}: {e}")
                 continue
 
         if not cancelled:
@@ -300,9 +350,9 @@ class XenderController():
         # Prompt user for destination folder
         dest_folder = filedialog.askdirectory(title="Select destination folder", parent=self.window)
         if not dest_folder:
-            # self.view.show_message(f"{Back.RED}[!] Invalid Destination folder")
+            # print(f"[!] Invalid Destination folder")
             return
-        # self.view.show_message(f"{Back.GREEN}[OK] Destination folder {dest_folder}")
+        # print(f"{Back.GREEN}[OK] Destination folder {dest_folder}")
 
         # Async file count receive — user can cancel while waiting
 
@@ -322,14 +372,14 @@ class XenderController():
                     pass
 
             if cancel_task in done:
-                # self.view.show_message(Back.RED + "[!] Cancelled — returning to menu.")
+                # print("[!] Cancelled — returning to menu.")
                 return
 
             no_files = count_task.result()
-            self.view.show_message(f"  Receiving {no_files} file(s)...")
+            print(f"  Receiving {no_files} file(s)...")
 
         except Exception as e:
-            # self.view.show_message(Back.RED + f"[!] Failed to read file count: {e}")
+            # print(f"[!] Failed to read file count: {e}")
             return
         finally:
             self.model.tcp_client_socket.setblocking(True)
@@ -360,18 +410,18 @@ class XenderController():
 
             if recv_file in done:
                 self.view.end_inline()                  # move off progress bar line
-                self.view.show_message(recv_file.result())
+                print(recv_file.result())
                 
             elif pressed_key in done:
                 self.model.send_cancel_signal()
-                # self.view.show_message(Back.RED + "[!] Recieving stopped by user.")
+                # print("[!] Recieving stopped by user.")
 
             elif watch_cancel in done:
-                # self.view.show_message(Back.RED + "[!]  Transfer cancelled by sender.")
+                # print("[!]  Transfer cancelled by sender.")
                 return
 
         except Exception as e:
-            # self.view.show_message(f"{Back.RED}[!] Error: {e}")
+            # print(f"[!] Error: {e}")
             return
 
 
