@@ -73,6 +73,7 @@ class XenderController():
         self.stop_scanning.set()
 
     def broadcast(self):
+        print("broadcasting...")
         self.stop_broadcasting.clear()
         self.model.init_bd_socks()
 
@@ -80,18 +81,17 @@ class XenderController():
         message = bytes([len(username_bytes)]) + username_bytes + b"XENDER_DISCOVERY_REQUEST"
 
         while not self.stop_broadcasting.is_set():
-            print("broadcasting...")
             try:
                 dev = self.model.broadcast(message)
                 if dev:
-                    print(dev)
+                    # print(dev)
+                    pass
             except socket.timeout:
                 continue
 
             if dev and self.scanners !=  dev:
                 self.scanners = dev
                 self.app.refresh_scanners(self.scanners)
-
 
         # while self.stop_broadcasting.is_set():
         #     self.scanners.put("HP Probook")

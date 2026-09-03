@@ -83,9 +83,9 @@ class P2PApp(ctk.CTk):
     def show_main_selection(self):
         self.show_view(MainSelectionView)
 
-    def set_connected_user(self, username: str):
-        self.controller.connect()   # <- Intiate connection
-        self.connected_user = username
+    def set_connected_user(self, mode, username, dev_addr):
+        self.controller.connect(dev_addr)   # <- Intiate connection
+        # self.connected_user = username
         transfer_view = self.frames[ConnectedTransferView]
         transfer_view.update_header(username)
         self.show_view(ConnectedTransferView)
@@ -176,33 +176,32 @@ class ScanningView(ctk.CTkFrame):
             widget.destroy()
         self.device_rows.clear()
 
-    def add_discovered_device(self, dev_info: str):
+    def add_discovered_device(self, dev_info: tuple[str, str]):
         dev_name = dev_info[0]
         dev_addr = dev_info[1]
 
         row = ctk.CTkFrame(self.device_list_frame)
         row.pack(fill="x", pady=5, padx=5)
 
-        lbl = ctk.CTkLabel(row, text=f"💻  {dev_name[0] ({dev_addr})}", font=ctk.CTkFont(size=14))
+        lbl = ctk.CTkLabel(row, text=f"💻  {dev_name[0]} ({dev_addr})", font=ctk.CTkFont(size=14))
         lbl.pack(side="left", padx=15, pady=12)
 
         btn = ctk.CTkButton(
-            row, text="Connect", width=100,
-            command=lambda r=row, name=dev_name: self.handle_connect(r, name),
+            row, text="Connect", width=100
         )
-        btn.configure(command=lambda b=btn, r=row, name=dev_name: self.handle_connect(b, name))
+        btn.configure(command=lambda b=btn, name=dev_name, addr=dev_addr: self.handle_connect(b, name, addr))
         btn.pack(side="right", padx=15, pady=12)
 
         self.device_rows.append({"frame": row, "button": btn, "name": dev_name})
 
-    def handle_connect(self, active_btn, device_name):
+    def handle_connect(self, active_btn, dev_name, dev_addr):
         for item in self.device_rows:
             if item["button"] != active_btn:
                 item["button"].configure(state="disabled")
             else:
                 item["button"].configure(state="disabled", fg_color="#0082FC")
                 # item["frame"].configure(text="Connecting...", fg_color="#4C02F8")
-        self.after(600, lambda: self.app.set_connected_user(device_name))
+        self.after(600, lambda: self.app.set_connected_user("scan", dev_name, dev_addr))
         
 
 # -------------------------------------------------------------
@@ -227,21 +226,26 @@ class BroadcastingView(ctk.CTkFrame):
         self.device = device
 
     def on_show(self):
+        print(self.device)
         for widget in self.incoming_list_frame.winfo_children():
             widget.destroy()
         if self.device:
-            self.add_incoming_request(f"{self.device[0]} ({self.device[1][0]:self.device[1][1]})")
+            print(self.device)
+            self.add_incoming_request(self.device)
 
-    def add_incoming_request(self, requester_name: str):
+    def add_incoming_request(self, requester_info: tuple[str, str]):
+        requester_name = requester_info[0]
+        requester_addr = requester_info[1][0]
+        requester_port = requester_info[1][1]
         row = ctk.CTkFrame(self.incoming_list_frame)
         row.pack(fill="x", pady=5, padx=5)
 
-        lbl = ctk.CTkLabel(row, text=f"📥 Incoming: {requester_name}", font=ctk.CTkFont(size=14))
+        lbl = ctk.CTkLabel(row, text=f"📥 Incoming: {requester_name} ({requester_addr}:{requester_port})", font=ctk.CTkFont(size=14))
         lbl.pack(side="left", padx=15, pady=12)
 
         btn_accept = ctk.CTkButton(
             row, text="Accept", width=100,
-            command=lambda: self.app.set_connected_user(requester_name),
+            command=lambda: self.app.set_connected_user(requester_name, requester_addr),
         )
         btn_accept.pack(side="right", padx=15, pady=12)
 
