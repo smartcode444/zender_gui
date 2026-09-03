@@ -1,11 +1,12 @@
 import asyncio
 import threading
-import queue
+# import queue
 import socket
 import os
 from dataclasses import dataclass
 from tkinter import filedialog
 from src.model import NetworkManager
+# from model import NetworkManager
 
 @dataclass
 class FileInfo:
@@ -23,14 +24,15 @@ class XenderController():
         self.running = True
         self.stop_scanning = threading.Event()
         self.stop_broadcasting = threading.Event()
-        self.scanned_devices = queue.Queue()
-        self.scanners = queue.Queue()
+        # self.scanned_devices = queue.Queue()
+        # self.scanners = queue.Queue()
+        self.scanned_devices = None
+        self.scanners = None
         
     def scan(self):
+        devices = {}
         print(f"Scanning... {len(devices)} found")
         self.model.init_scan_socks()
-        devices = {}
-        msg    = b"I_SEE_U" + self.username.encode('utf-8')
 
         print("Scanning for devices...\n")
 
@@ -41,42 +43,68 @@ class XenderController():
                 if name:
                     devices[name] = addr
                     print(f"Scanning... {len(devices)} found")
-                    self.scanned_devices.put(devices)
             except socket.timeout:
                 continue
             except Exception as e:
                 print(f"[!]  Error scanning: {e}")
                 break
 
+            if devices and self.scanned_devices != devices:
+                self.scanned_devices = devices
+                self.app.refresh_scan_devices(self.scanned_devices)
+
+        # while not self.stop_scanning.is_set():
+        #     self.scanned_devices.put({"Roomate-PC": ("127.0.0.1", "8080"), "Mackbook Alpha": ("127.0.0.2", "7070")})
+
+
     def run_scan(self):
         self.stop_scanning.clear()
-        # scan_thread = threading.Thread(target=self.scan)
-        self.scanned_devices = {"Device1": ("127.0.0.1", "8080"), "Device2": ("127.0.0.2", "7070")}
+        scan_thread = threading.Thread(target=self.scan)
+        scan_thread.start()
 
-        while not self.stop_scanning.is_set():
-            self.app.refresh_scan_devices(self.scanned_devices.get_nowait())
+
+        # while not self.stop_scanning.is_set():
+        #     try:
+        #         self.app.refresh_scan_devices(self.scanned_devices.get_nowait())
+        #     except queue.Empty:
+        #         continue
 
     def end_scan(self):
         self.stop_scanning.set()
 
     def broadcast(self):
         self.stop_broadcasting.clear()
-        print("broadcasting...")
         self.model.init_bd_socks()
 
         username_bytes = self.username.encode('utf-8')
         message = bytes([len(username_bytes)]) + username_bytes + b"XENDER_DISCOVERY_REQUEST"
 
-        while self.stop_broadcasting.is_set():
+        while not self.stop_broadcasting.is_set():
+            print("broadcasting...")
             try:
                 dev = self.model.broadcast(message)
                 if dev:
-                    self.scanners = dev
+                    print(dev)
             except socket.timeout:
                 continue
 
-    # def run_broadcas(self):
+            if dev and self.scanners !=  dev:
+                self.scanners = dev
+                self.app.refresh_scanners(self.scanners)
 
+
+        # while self.stop_broadcasting.is_set():
+        #     self.scanners.put("HP Probook")
+
+    def run_broadcast(self):
+        self.stop_broadcasting.set()
+        broadcast_thread = threading.Thread(target=self.broadcast)
+        broadcast_thread.start()
+        # while not self.stop_broadcasting.is_set():
+        #     try:
+        #         self.app.refresh_scan_devices(self.scanned_devices.get_nowait())
+        #     except queue.Empty:
+        #         continue
 
     def end_broadcast(self):
         self.stop_broadcasting.set()
@@ -441,3 +469,4 @@ class XenderController():
             elif sel == 3:
                 await self.try_recieve()
             elif sel == 4:break
+            

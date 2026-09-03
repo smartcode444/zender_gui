@@ -1,6 +1,8 @@
 import customtkinter as ctk
+import sys
 # import queue
 from tkinter import filedialog
+# from controller import XenderController
 from src.controller import XenderController
 
 ctk.set_appearance_mode("Dark")
@@ -94,6 +96,8 @@ class P2PApp(ctk.CTk):
             devices_list.append(name + " " + (addr[0]))
         self.frames[ScanningView].display_devices(devices)
 
+    def refresh_scanners(self, device):
+        self.frames[BroadcastingView].display_device(device)
 
 # -------------------------------------------------------------
 #  MAIN SELECTION VIEW (Scan vs Broadcast)
@@ -126,7 +130,7 @@ class MainSelectionView(ctk.CTkFrame):
     def on_scan_card(self):
         """Switch from main view to scanning view
             and call controller to start scanning"""
-        app.controller.run_scan()
+        self.app.controller.run_scan()
         self.app.show_view(ScanningView)
 
     def on_broadcast_card(self):
@@ -208,6 +212,7 @@ class BroadcastingView(ctk.CTkFrame):
     def __init__(self, parent, app: P2PApp):
         super().__init__(parent, fg_color="transparent")
         self.app = app
+        self.device = None
 
         self.header = ctk.CTkLabel(self, text="Broadcasting...", font=ctk.CTkFont(size=22, weight="bold"))
         self.header.pack(pady=(10, 5), anchor="w")
@@ -218,10 +223,14 @@ class BroadcastingView(ctk.CTkFrame):
         self.incoming_list_frame = ctk.CTkScrollableFrame(self, corner_radius=8)
         self.incoming_list_frame.pack(fill="both", expand=True, pady=10)
 
+    def display_device(self, device):
+        self.device = device
+
     def on_show(self):
         for widget in self.incoming_list_frame.winfo_children():
             widget.destroy()
-        self.add_incoming_request("MacBook-Alpha (192.168.1.33)")
+        if self.device:
+            self.add_incoming_request(f"{self.device[0]} ({self.device[1][0]:self.device[1][1]})")
 
     def add_incoming_request(self, requester_name: str):
         row = ctk.CTkFrame(self.incoming_list_frame)
