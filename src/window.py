@@ -84,8 +84,8 @@ class P2PApp(ctk.CTk):
         self.show_view(MainSelectionView)
 
     def set_connected_user(self, mode, username, dev_addr):
-        self.controller.connect(dev_addr)   # <- Intiate connection
         # self.connected_user = username
+        self.controller.connect(mode, dev_addr)   # <- Intiate connection
         transfer_view = self.frames[ConnectedTransferView]
         transfer_view.update_header(username)
         self.show_view(ConnectedTransferView)
@@ -245,7 +245,7 @@ class BroadcastingView(ctk.CTkFrame):
 
         btn_accept = ctk.CTkButton(
             row, text="Accept", width=100,
-            command=lambda: self.app.set_connected_user(requester_name, requester_addr),
+            command=lambda: self.app.set_connected_user("broadcast", requester_name, requester_addr),
         )
         btn_accept.pack(side="right", padx=15, pady=12)
 

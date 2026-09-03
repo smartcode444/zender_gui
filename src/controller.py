@@ -24,6 +24,7 @@ class XenderController():
         self.running = True
         self.stop_scanning = threading.Event()
         self.stop_broadcasting = threading.Event()
+        self.stop_connecting = threading.Event()
         # self.scanned_devices = queue.Queue()
         # self.scanners = queue.Queue()
         self.scanned_devices = None
@@ -53,24 +54,28 @@ class XenderController():
                 self.scanned_devices = devices
                 self.app.refresh_scan_devices(self.scanned_devices)
 
-        # while not self.stop_scanning.is_set():
-        #     self.scanned_devices.put({"Roomate-PC": ("127.0.0.1", "8080"), "Mackbook Alpha": ("127.0.0.2", "7070")})
-
-
     def run_scan(self):
         self.stop_scanning.clear()
         scan_thread = threading.Thread(target=self.scan)
         scan_thread.start()
-
-
-        # while not self.stop_scanning.is_set():
-        #     try:
-        #         self.app.refresh_scan_devices(self.scanned_devices.get_nowait())
-        #     except queue.Empty:
-        #         continue
+        return
 
     def end_scan(self):
         self.stop_scanning.set()
+
+    def scan_connect(self, addr):
+        self.stop_connecting.clear()
+
+        while not self.stop_connecting:
+            try:
+                self.model.sc_connect(addr)
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"[!] Error connecting to: {e}.")
+                break
+        
+
 
     def broadcast(self):
         print("broadcasting...")
@@ -83,9 +88,9 @@ class XenderController():
         while not self.stop_broadcasting.is_set():
             try:
                 dev = self.model.broadcast(message)
-                if dev:
-                    # print(dev)
-                    pass
+                # if dev:
+                #     # print(dev)
+                #     pass
             except socket.timeout:
                 continue
 
@@ -93,21 +98,40 @@ class XenderController():
                 self.scanners = dev
                 self.app.refresh_scanners(self.scanners)
 
-        # while self.stop_broadcasting.is_set():
-        #     self.scanners.put("HP Probook")
-
     def run_broadcast(self):
         self.stop_broadcasting.set()
         broadcast_thread = threading.Thread(target=self.broadcast)
         broadcast_thread.start()
-        # while not self.stop_broadcasting.is_set():
-        #     try:
-        #         self.app.refresh_scan_devices(self.scanned_devices.get_nowait())
-        #     except queue.Empty:
-        #         continue
+        return
 
     def end_broadcast(self):
         self.stop_broadcasting.set()
+
+
+    def broadcast_connect(self):
+        while not self.stop_connecting:
+            try:
+                self.model.bd_connect()
+                break
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"[!] Error connecting to: {e}.")
+                break
+
+    def connect(self, mode, dev_addr=None):
+        if mode == "scan":
+            sc_conn_thread = threading.Thread(target=self.scan_connect, args=(dev_addr, ))
+            sc_conn_thread.start()
+        elif mode == "broadcast":
+            bd_conn_thread = threading.Thread(target=self.broadcast_connect)
+            bd_conn_thread.start()
+
+        return
+
+
+    def end_connecting(self):
+        self.stop_connecting.is_set()
 
 
 # <-- REST OF THE CODE IS NOT MEANT TO BE USED -->

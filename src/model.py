@@ -99,11 +99,47 @@ class NetworkManager:
                 self.tcp_socket.close()
                 raise e
     
+    def bd_connect(self):
+        self.tcp_socket.settimeout(1.0)   
+        try:
+            self.tcp_client_socket, addr = self.tcp_socket.accept()
+            self.tcp_socket.close()
+
+        except socket.timeout:
+            raise socket.timeout 
+    
+        except Exception as e:
+            self.tcp_socket.close()
+            raise e
+
+        try:
+            self.ctrl_socket, _ = self.ctrl_server.accept()
+            self.ctrl_server.close()
+
+        except socket.timeout:
+            raise socket.timeout 
+            
+        except Exception as e:
+            self.tcp_socket.close()
+            raise e
+    
 
     def init_scan_socks(self):
         """Intialize sockets for scanning."""
         self.selected_mode = "scan"
         self.tcp_client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    def scan_connect(self, addr):
+        self.stop_connecting.clear()
+
+        while not self.stop_connecting:
+            try:
+                self.model.sc_connect(addr)
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"[!] Error connecting to: {e}.")
+                break
             
     
     def scan(self, msg, devices) -> tuple:
