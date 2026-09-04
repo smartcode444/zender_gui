@@ -52,13 +52,12 @@ class XenderController():
 
             if devices and self.scanned_devices != devices:
                 self.scanned_devices = devices
-                self.app.refresh_scan_devices(self.scanned_devices)
+                self.app.after(0, self.app.refresh_scan_devices, self.scanned_devices)
 
     def run_scan(self):
         self.stop_scanning.clear()
         scan_thread = threading.Thread(target=self.scan)
         scan_thread.start()
-        return
 
     def end_scan(self):
         self.stop_scanning.set()
@@ -96,13 +95,12 @@ class XenderController():
 
             if dev and self.scanners !=  dev:
                 self.scanners = dev
-                self.app.refresh_scanners(self.scanners)
+                self.app.after(0, self.app.refresh_scanners, self.scanners)
 
     def run_broadcast(self):
         self.stop_broadcasting.set()
         broadcast_thread = threading.Thread(target=self.broadcast)
         broadcast_thread.start()
-        return
 
     def end_broadcast(self):
         self.stop_broadcasting.set()
@@ -126,8 +124,6 @@ class XenderController():
         elif mode == "broadcast":
             bd_conn_thread = threading.Thread(target=self.broadcast_connect)
             bd_conn_thread.start()
-
-        return
 
 
     def end_connecting(self):

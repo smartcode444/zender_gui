@@ -1,6 +1,5 @@
 import customtkinter as ctk
-import sys
-# import queue
+import os
 from tkinter import filedialog
 # from controller import XenderController
 from src.controller import XenderController
@@ -81,6 +80,9 @@ class P2PApp(ctk.CTk):
             frame.on_show()
 
     def show_main_selection(self):
+        self.controller.end_broadcast()
+        self.controller.end_scan()
+        self.controller.end_connecting()
         self.show_view(MainSelectionView)
 
     def set_connected_user(self, mode, username, dev_addr):
@@ -98,6 +100,19 @@ class P2PApp(ctk.CTk):
 
     def refresh_scanners(self, device):
         self.frames[BroadcastingView].display_device(device)
+
+
+    def start_scan(self):
+        self.controller.run_scan()
+
+    def start_broadcast(self):
+        self.controller.run_broadcast()
+
+    def send_file(self, path, progress_callback):
+        self.controller.send_file(path, progress_callback)
+
+    def send_folder(self, path, progress_callback):
+        self.controller.send_folder(path, progress_callback)
 
 # -------------------------------------------------------------
 #  MAIN SELECTION VIEW (Scan vs Broadcast)
@@ -130,13 +145,13 @@ class MainSelectionView(ctk.CTkFrame):
     def on_scan_card(self):
         """Switch from main view to scanning view
             and call controller to start scanning"""
-        self.app.controller.run_scan()
+        self.app.start_scan()
         self.app.show_view(ScanningView)
 
     def on_broadcast_card(self):
         """Switch from main view to broadcasting view
             and call the controller to start broadcasting"""
-        app.controller.run_broadcast()
+        self.app.start_broadcast()
         self.app.show_view(BroadcastingView)
 
 
@@ -254,7 +269,7 @@ class BroadcastingView(ctk.CTkFrame):
 # 4. CONNECTED TRANSFER VIEW (Tabs for Sending & Receiving)
 # -------------------------------------------------------------
 class ConnectedTransferView(ctk.CTkFrame):
-    def __init__(self, parent, app: P2PApp):
+    def __init__(self, parent, app):
         super().__init__(parent, fg_color="transparent")
         self.app = app
 
@@ -292,30 +307,37 @@ class ConnectedTransferView(ctk.CTkFrame):
         self.recv_list_frame = ctk.CTkScrollableFrame(self.tab_recv, label_text="Incoming Transfers")
         self.recv_list_frame.pack(fill="both", expand=True)
 
-    def on_show(self):
-        # Mock receiving an incoming file when the view is opened
-        self.add_transfer_item(self.recv_list_frame, "Vacation_Photos.zip", 0.15)
-        self.add_transfer_item(self.recv_list_frame, "Project_Document.pdf", 0.88)
-
     def update_header(self, username: str):
         self.lbl_connected.configure(text=f"Connected to: {username}")
-        # Make sure we start on the sending tab by default
         self.tabview.set("Sending")
 
     def action_send_files(self):
         filepaths = filedialog.askopenfilenames(title="Select Files to Send")
+        if not filepaths:
+            return
+
         for path in filepaths:
-            filename = path.split("/")[-1]
-            self.add_transfer_item(self.send_list_frame, filename, 0.0)
+            filename = os.path.basename(path)
+            # 1. Create the UI row and receive an update callback
+            progress_callback = self.add_transfer_item(self.send_list_frame, filename, 0.0)
+            
+            # 2. Pass both the path and the callback to your backend
+            if hasattr(self.app, "send_file"):
+                self.app.send_file(path, progress_callback)
 
     def action_send_folder(self):
         folderpath = filedialog.askdirectory(title="Select Folder to Send")
-        if folderpath:
-            foldername = folderpath.split("/")[-1]
-            self.add_transfer_item(self.send_list_frame, f"Folder: {foldername}", 0.0)
+        if not folderpath:
+            return
+
+        foldername = os.path.basename(folderpath)
+        progress_callback = self.add_transfer_item(self.send_list_frame, f"Folder: {foldername}", 0.0)
+        
+        if hasattr(self.app, "send_folder"):
+            self.app.send_folder(folderpath, progress_callback)
 
     def add_transfer_item(self, parent_frame, item_name: str, progress_val: float = 0.0):
-        """Reusable method to add UI items to either the Send or Receive lists"""
+        """Builds a transfer row and returns a thread-safe update function."""
         row = ctk.CTkFrame(parent_frame)
         row.pack(fill="x", pady=5, padx=5)
 
@@ -335,10 +357,23 @@ class ConnectedTransferView(ctk.CTkFrame):
             width=70,
             fg_color="#a83232",
             hover_color="#7a2424",
-            command=lambda: row.destroy(),  # Hook up backend abort signal here
+            command=lambda: row.destroy(),
         )
         btn_cancel.pack(side="right", padx=10, pady=10)
 
+        # Internal helper to update UI on the Tkinter main thread
+        def _apply_update(value: float):
+            # Check if row was canceled/destroyed to avoid referencing deleted widgets
+            if progress.winfo_exists() and pct_lbl.winfo_exists():
+                clamped_val = max(0.0, min(1.0, value))
+                progress.set(clamped_val)
+                pct_lbl.configure(text=f"{int(clamped_val * 100)}%")
+
+        # Return a callback that safely schedules the update via .after()
+        def update_progress(value: float):
+            self.after(0, _apply_update, value)
+
+        return update_progress
 
 if __name__ == "__main__":
     app = P2PApp("smartcode")
