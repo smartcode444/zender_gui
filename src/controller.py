@@ -1,6 +1,6 @@
 import asyncio
 import threading
-# import queue
+import queue
 import socket
 import os
 from dataclasses import dataclass
@@ -13,7 +13,7 @@ class FileInfo:
     name: str          
     relative_path: str  
 
-async def async_key_pressed():
+def async_key_pressed():
     pass
 
 class XenderController():
@@ -22,15 +22,26 @@ class XenderController():
         self.app = app
         self.username = username
         self.running = True
+        self.is_connected = False
         self.stop_scanning = threading.Event()
         self.stop_broadcasting = threading.Event()
         self.stop_connecting = threading.Event()
         # self.scanned_devices = queue.Queue()
         # self.scanners = queue.Queue()
+        self.send_file_queue = queue.Queue()
+        self.send_folder_queue = queue.Queue()
         self.scanned_devices = None
         self.scanners = None
-        
-    def scan(self):
+
+        self.send_worker_thread = threading.Thread(target=self._send_file_worker, daemon=True)
+        self.send_worker_thread.start()
+
+        self.recieve_worker_thread = threading.Thread(target=self._recieve_worker, daemon=True)
+        self.recieve_worker_thread.start()
+
+    # <- SCAN ->
+
+    def _scan_worker(self):
         devices = {}
         print(f"Scanning... {len(devices)} found")
         self.model.init_scan_socks()
@@ -56,7 +67,7 @@ class XenderController():
 
     def run_scan(self):
         self.stop_scanning.clear()
-        scan_thread = threading.Thread(target=self.scan)
+        scan_thread = threading.Thread(target=self._scan_worker, daemon=True)
         scan_thread.start()
 
     def end_scan(self):
@@ -74,9 +85,9 @@ class XenderController():
                 print(f"[!] Error connecting to: {e}.")
                 break
         
+    # <- BROADCAST ->
 
-
-    def broadcast(self):
+    def _broadcast_worker(self):
         print("broadcasting...")
         self.stop_broadcasting.clear()
         self.model.init_bd_socks()
@@ -99,7 +110,7 @@ class XenderController():
 
     def run_broadcast(self):
         self.stop_broadcasting.set()
-        broadcast_thread = threading.Thread(target=self.broadcast)
+        broadcast_thread = threading.Thread(target=self._broadcast_worker, daemon=True)
         broadcast_thread.start()
 
     def end_broadcast(self):
@@ -125,9 +136,26 @@ class XenderController():
             bd_conn_thread = threading.Thread(target=self.broadcast_connect)
             bd_conn_thread.start()
 
-
     def end_connecting(self):
         self.stop_connecting.is_set()
+
+    # <- SEND ->
+    def _send_file_worker(self, path, progress_callback):
+        while self.is_connected:
+            file_path, progress_callback = self.send_file_queue.get(timeout=1)
+            
+
+    def send_file(self, path, progress_callback):
+        self.send_folder_queue.put((path, progress_callback))
+
+
+    def send_folder(self, path, progress_callback):
+        self.send_queue.put((path, progress_callback))
+
+
+
+    # <- RECIEVE ->
+
 
 
 # <-- REST OF THE CODE IS NOT MEANT TO BE USED -->
