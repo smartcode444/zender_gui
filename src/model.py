@@ -2,6 +2,7 @@ import socket
 import asyncio
 import struct
 import psutil
+import os
 
 
 
@@ -18,8 +19,10 @@ class NetworkManager:
 
         self.name              = username
 
-        self.tcp_socket        = None
-        self.tcp_client_socket = None
+        self.tcp_send_server   = None
+        self.tcp_recv_server   = None 
+        self.tcp_send          = None
+        self.tcp_recv          = None
         self.ctrl_socket       = None # accepted from broadcaster side
         self.ctrl_conn         = None # connected from scanner side
         self._cancel_flag      = asyncio.Event()
@@ -42,10 +45,15 @@ class NetworkManager:
         self.ctrl_server.bind(('', self.CTRL_PORT))
         self.ctrl_server.listen(1)
 
-        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
-        self.tcp_socket.bind(('', self.TCP_PORT))
-        self.tcp_socket.listen(1)
+        self.tcp_send_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_send_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
+        self.tcp_send_server.bind(('', self.TCP_PORT))
+        self.tcp_send_server.listen(1)
+
+        self.tcp_recv_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_recv_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
+        self.tcp_recv_server.bind(('', self.TCP_PORT))
+        self.tcp_recv_server.listen(1)
 
 
     def broadcast(self, message) -> str:
@@ -70,77 +78,41 @@ class NetworkManager:
         if decoded[:7] == "I_SEE_U":
             device_name = decoded[7:]
             return device_name, addr
-        elif decoded[-24:] == "XENDER_DISCOVERY_REQUEST":
-            return "smartcode", addr
+        # elif decoded[-24:] == "XENDER_DISCOVERY_REQUEST":
+        #     return "smartcode", addr
 
         return None, None
 
-    def bd_connect(self):
-            self.tcp_socket.settimeout(1.0)   
-            try:
-                self.tcp_client_socket, addr = self.tcp_socket.accept()
-                self.tcp_socket.close()
-    
-            except socket.timeout:
-                raise socket.timeout 
-        
-            except Exception as e:
-                self.tcp_socket.close()
-                raise e
-    
-            try:
-                self.ctrl_socket, _ = self.ctrl_server.accept()
-                self.ctrl_server.close()
-    
-            except socket.timeout:
-                raise socket.timeout 
-                
-            except Exception as e:
-                self.tcp_socket.close()
-                raise e
     
     def bd_connect(self):
-        self.tcp_socket.settimeout(1.0)   
+        self.tcp_send_server.settimeout(1.0)   
+        self.tcp_recv_server.settimeout(1.0)   
+        self.ctrl_server.settimeout(1.0)   
         try:
-            self.tcp_client_socket, addr = self.tcp_socket.accept()
-            self.tcp_socket.close()
+            self.tcp_send, _ = self.tcp_send_server.accept()
+            self.tcp_send_server.close()
 
-        except socket.timeout:
-            raise socket.timeout 
-    
-        except Exception as e:
-            self.tcp_socket.close()
-            raise e
+            self.tcp_recv, _ = self.tcp_recv_server.accept()
+            self.tcp_recv_server.close()
 
-        try:
             self.ctrl_socket, _ = self.ctrl_server.accept()
             self.ctrl_server.close()
 
         except socket.timeout:
             raise socket.timeout 
-            
+    
         except Exception as e:
-            self.tcp_socket.close()
+            self.tcp_send_server.close()
             raise e
     
 
     def init_scan_socks(self):
         """Intialize sockets for scanning."""
         self.selected_mode = "scan"
-        self.tcp_client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    def scan_connect(self, addr):
-        self.stop_connecting.clear()
-
-        while not self.stop_connecting:
-            try:
-                self.model.sc_connect(addr)
-            except socket.timeout:
-                continue
-            except Exception as e:
-                print(f"[!] Error connecting to: {e}.")
-                break
-            
+        self.tcp_send = socket.socket(socket.AF_INET, socket.SOCK_STREAM)        
+        self.tcp_recv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)       
+        self.ctrl_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
+        
     
     def scan(self, msg, devices) -> tuple:
         """Scan for devices on the network."""
@@ -167,6 +139,77 @@ class NetworkManager:
 
         return None, None
 
+    def sc_connect(self, device_addr):
+        self.tcp_send.settimeout(1.0)
+        self.tcp_recv.settimeout(1.0)
+        self.ctrl_conn.settimeout(1.0)
+        try:
+            self.tcp_send.connect((device_addr, self.TCP_PORT))
+            self.tcp_recv.connect((device_addr, self.TCP_PORT))
+            self.ctrl_conn.connect((device_addr, self.CTRL_PORT))
+
+        except socket.timeout:
+            raise socket.timeout
+
+        except Exception as e:
+            raise e
+
+
+    # <- SEND ->
+
+    def _send_end(self):
+        """Send END command."""        # Send a command byte: 0x02 means END
+        try:
+            self.tcp_client_socket.send(b'\x02')
+        except OSError:
+            pass
+
+    async def _send_file(self, name, path, rel_path, progress_callback):
+        """Send a single file over the data socket. 
+            Notifies reciever on cancellation.     """
+        loop = asyncio.get_event_loop()
+        self.tcp_client_socket.setblocking(False)
+        self._cancel_flag.clear()
+
+        try:
+            filesize = os.path.getsize(path)
+            namebytes = rel_path.encode('utf-8') if rel_path else name.encode('utf-8')
+            # ── Header
+            # [0x01][4B name_len][name][8B file_size]
+            # 8 bytes for file_size supports files up to 16 exabytes
+            header = (b'\x01' 
+                        + len(namebytes).to_bytes(4, 'big') 
+                        + namebytes
+                        + filesize.to_bytes(8, 'big'))
+            await loop.sock_sendall(self.tcp_client_socket, header)
+
+            with open(path, "rb") as f:
+                sent = 0
+                while sent < filesize:
+                    if self._cancel_flag.is_set(): # Check between chunks
+                        break
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    await loop.sock_sendall(self.tcp_client_socket, chunk)
+                    sent += len(chunk)
+                    progress_callback(sent/filesize)
+                        
+
+        except asyncio.CancelledError:
+            self.send_cancel_signal()
+            raise
+
+        except OSError as e:
+            raise RuntimeError(f"\n[!] Error while sending '{name}': {e}")
+
+        finally:
+            try:
+                self.tcp_client_socket.setblocking(True)
+            except OSError:
+                pass
+    
+        
 
 def get_all_broadcast_addresses():
     """

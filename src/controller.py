@@ -36,8 +36,8 @@ class XenderController():
         self.send_worker_thread = threading.Thread(target=self._send_file_worker, daemon=True)
         self.send_worker_thread.start()
 
-        self.recieve_worker_thread = threading.Thread(target=self._recieve_worker, daemon=True)
-        self.recieve_worker_thread.start()
+        # self.recieve_worker_thread = threading.Thread(target=self._recieve_worker, daemon=True)
+        # self.recieve_worker_thread.start()
 
     # <- SCAN ->
 
@@ -140,14 +140,39 @@ class XenderController():
         self.stop_connecting.is_set()
 
     # <- SEND ->
-    def _send_file_worker(self, path, progress_callback):
+    def _send_file_worker(self):
         while self.is_connected:
-            file_path, progress_callback = self.send_file_queue.get(timeout=1)
-            
+            try:
+                file_path, progress_callback = self.send_file_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+
+            # Send the file over backend socket
+            try:
+                self.model._send_file(file_path, progress_callback)
+            except Exception as e:
+                print(f"Error sending file_path: {e}")
+            finally:
+                self.send_file_queue.task_done()
+
 
     def send_file(self, path, progress_callback):
         self.send_folder_queue.put((path, progress_callback))
 
+    def _send_file_worker(self):
+        while self.is_connected:
+            try:
+                folder_path, progress_callback = self.send_folder_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+
+            # Send the file over backend socket
+            try:
+                self.model.send_folder(folder_path, progress_callback)
+            except Exception as e:
+                print(f"Error sending folder_path: {e}")
+            finally:
+                self.send_folder_queue.task_done()
 
     def send_folder(self, path, progress_callback):
         self.send_queue.put((path, progress_callback))
