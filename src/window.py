@@ -351,27 +351,63 @@ class ConnectedTransferView(ctk.CTkFrame):
         pct_lbl = ctk.CTkLabel(row, text=f"{int(progress_val * 100)}%", width=45)
         pct_lbl.pack(side="left", padx=5)
 
+        status_lbl = ctk.CTkLabel(row, text="", width=30, font=ctk.CTkFont(size=15, weight="bold"))
+        status_lbl.pack(side="left", padx=5)
+
         btn_cancel = ctk.CTkButton(
             row,
             text="Cancel",
             width=70,
             fg_color="#a83232",
             hover_color="#7a2424",
-            command=lambda: row.destroy(),
+            command=lambda: row.destroy(),   # Hook up backend abort signal here
         )
         btn_cancel.pack(side="right", padx=10, pady=10)
 
-        # Internal helper to update UI on the Tkinter main thread
-        def _apply_update(value: float):
-            # Check if row was canceled/destroyed to avoid referencing deleted widgets
-            if progress.winfo_exists() and pct_lbl.winfo_exists():
-                clamped_val = max(0.0, min(1.0, value))
-                progress.set(clamped_val)
-                pct_lbl.configure(text=f"{int(clamped_val * 100)}%")
+        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        state = {"status": None, "frame_idx": 0, "is_spinning": False}
 
-        # Return a callback that safely schedules the update via .after()
-        def update_progress(value: float):
-            self.after(0, _apply_update, value)
+        def _spin():
+            if not status_lbl.winfo_exists():
+                return
+            if state["status"] == 1:
+                state["frame_idx"] = (state["frame_idx"] + 1) % len(spinner_frames)
+                status_lbl.configure(text=spinner_frames[state["frame_idx"]], text_color="#3498db")
+                self.after(100, _spin)
+            else:
+                state["is_spinning"] = False
+
+        # Internal helper to update UI on Tkinter's main thread
+        def _apply_update(value: float, status: int):
+            if not (progress.winfo_exists() and pct_lbl.winfo_exists() and status_lbl.winfo_exists()):
+                return
+
+            # Update progress bar and percentage text
+            clamped_val = max(0.0, min(1.0, value))
+            progress.set(clamped_val)
+            pct_lbl.configure(text=f"{int(clamped_val * 100)}%")
+
+            # Update status and icon state
+            state["status"] = status
+
+            if status == 0:  # Success
+                status_lbl.configure(text="✔", text_color="#2ecc71")
+                progress.set(1.0)
+                pct_lbl.configure(text="100%")
+                btn_cancel.configure(text="Done", state="disabled", fg_color="#2b2b2b")
+
+            elif status == 1:  # Loading / In-Progress
+                if not state["is_spinning"]:
+                    state["is_spinning"] = True
+                    _spin()
+
+            elif status in (2, 3):  # Error / Failed
+                status_lbl.configure(text="✖", text_color="#e74c3c")
+                btn_cancel.configure(text="Failed", state="disabled", fg_color="#552222")
+
+        # Thread-safe dispatch using .after()
+        def update_progress(value: float, status: int):
+            self.after(0, _apply_update, value, status)
 
         return update_progress
 

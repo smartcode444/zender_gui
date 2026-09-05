@@ -22,10 +22,10 @@ class XenderController():
         self.app = app
         self.username = username
         self.running = True
-        self.is_connected = False
-        self.stop_scanning = threading.Event()
-        self.stop_broadcasting = threading.Event()
-        self.stop_connecting = threading.Event()
+        self.is_connected = threading.Event()
+        self.is_scanning = threading.Event()
+        self.is_broadcasting = threading.Event()
+        self.is_connecting = threading.Event()
         # self.scanned_devices = queue.Queue()
         # self.scanners = queue.Queue()
         self.send_file_queue = queue.Queue()
@@ -33,8 +33,11 @@ class XenderController():
         self.scanned_devices = None
         self.scanners = None
 
-        self.send_worker_thread = threading.Thread(target=self._send_file_worker, daemon=True)
-        self.send_worker_thread.start()
+        self.send_file_worker_thread = threading.Thread(target=self._send_file_worker, daemon=True)
+        self.send_file_worker_thread.start()
+
+        self.send_folder_worker_thread = threading.Thread(target=self._send_folder_worker, daemon=True)
+        self.send_folder_worker_thread.start()
 
         # self.recieve_worker_thread = threading.Thread(target=self._recieve_worker, daemon=True)
         # self.recieve_worker_thread.start()
@@ -49,7 +52,7 @@ class XenderController():
         print("Scanning for devices...\n")
 
         msg = b"I_SEE_U" + self.username.encode('utf-8')
-        while not self.stop_scanning.is_set():
+        while self.is_scanning.is_set():
             try:
                 name, addr = self.model.scan(msg, devices)
                 if name:
@@ -66,17 +69,15 @@ class XenderController():
                 self.app.after(0, self.app.refresh_scan_devices, self.scanned_devices)
 
     def run_scan(self):
-        self.stop_scanning.clear()
+        self.is_scanning.set()
         scan_thread = threading.Thread(target=self._scan_worker, daemon=True)
         scan_thread.start()
 
     def end_scan(self):
-        self.stop_scanning.set()
+        self.is_scanning.clear()
 
     def scan_connect(self, addr):
-        self.stop_connecting.clear()
-
-        while not self.stop_connecting:
+        while self.is_connecting:
             try:
                 self.model.sc_connect(addr)
             except socket.timeout:
@@ -89,13 +90,12 @@ class XenderController():
 
     def _broadcast_worker(self):
         print("broadcasting...")
-        self.stop_broadcasting.clear()
         self.model.init_bd_socks()
 
         username_bytes = self.username.encode('utf-8')
         message = bytes([len(username_bytes)]) + username_bytes + b"XENDER_DISCOVERY_REQUEST"
 
-        while not self.stop_broadcasting.is_set():
+        while self.is_broadcasting.is_set():
             try:
                 dev = self.model.broadcast(message)
                 # if dev:
@@ -109,16 +109,16 @@ class XenderController():
                 self.app.after(0, self.app.refresh_scanners, self.scanners)
 
     def run_broadcast(self):
-        self.stop_broadcasting.set()
+        self.is_broadcasting.set()
         broadcast_thread = threading.Thread(target=self._broadcast_worker, daemon=True)
         broadcast_thread.start()
 
     def end_broadcast(self):
-        self.stop_broadcasting.set()
+        self.is_broadcasting.clear()
 
 
     def broadcast_connect(self):
-        while not self.stop_connecting:
+        while self.is_connecting:
             try:
                 self.model.bd_connect()
                 break
@@ -129,6 +129,7 @@ class XenderController():
                 break
 
     def connect(self, mode, dev_addr=None):
+        self.is_connecting.set()
         if mode == "scan":
             sc_conn_thread = threading.Thread(target=self.scan_connect, args=(dev_addr, ))
             sc_conn_thread.start()
@@ -137,11 +138,17 @@ class XenderController():
             bd_conn_thread.start()
 
     def end_connecting(self):
-        self.stop_connecting.is_set()
+        self.is_connecting.clear()
 
     # <- SEND ->
+    def set_connection(self):
+        self.is_connected.set()
+
+    def end_connection(self):
+        self.is_connected.clear()
+
     def _send_file_worker(self):
-        while self.is_connected:
+        while self.is_connected.is_set():
             try:
                 file_path, progress_callback = self.send_file_queue.get(timeout=1)
             except queue.Empty:
@@ -157,10 +164,11 @@ class XenderController():
 
 
     def send_file(self, path, progress_callback):
+        self.set_connection()
         self.send_folder_queue.put((path, progress_callback))
 
-    def _send_file_worker(self):
-        while self.is_connected:
+    def _send_folder_worker(self):
+        while self.is_connected.is_set():
             try:
                 folder_path, progress_callback = self.send_folder_queue.get(timeout=1)
             except queue.Empty:
@@ -175,6 +183,7 @@ class XenderController():
                 self.send_folder_queue.task_done()
 
     def send_folder(self, path, progress_callback):
+        self.set_connection()
         self.send_queue.put((path, progress_callback))
 
 
