@@ -39,8 +39,11 @@ class XenderController():
         self.send_folder_worker_thread = threading.Thread(target=self._send_folder_worker, daemon=True)
         self.send_folder_worker_thread.start()
 
-        # self.recieve_worker_thread = threading.Thread(target=self._recieve_worker, daemon=True)
-        # self.recieve_worker_thread.start()
+        self.recieve_file_worker_thread = threading.Thread(target=self._recieve_file_worker, daemon=True)
+        self.recieve_file_worker_thread.start()
+
+        self.recieve_folder_worker_thread = threading.Thread(target=self._recieve_folder_worker, daemon=True)
+        self.recieve_folder_worker_thread.start()
 
     # <- SCAN ->
 
@@ -156,12 +159,13 @@ class XenderController():
 
             # Send the file over backend socket
             try:
-                self.model._send_file(file_path, progress_callback)
+                path = file_path.name
+                name = os.path.basename(path)
+                self.model._send_file(name, path, progress_callback, rel_path=None)
             except Exception as e:
                 print(f"Error sending file_path: {e}")
             finally:
                 self.send_file_queue.task_done()
-
 
     def send_file(self, path, progress_callback):
         self.set_connection()
@@ -176,7 +180,8 @@ class XenderController():
 
             # Send the file over backend socket
             try:
-                self.model.send_folder(folder_path, progress_callback)
+                norm_folder_path = os.path.normpath(folder_path)
+                self.model.send_folder(norm_folder_path, progress_callback)
             except Exception as e:
                 print(f"Error sending folder_path: {e}")
             finally:
@@ -186,10 +191,14 @@ class XenderController():
         self.set_connection()
         self.send_queue.put((path, progress_callback))
 
+    def _recieve_file_worker(self):
+        pass
+
+    def _recieve_folder_worker(self):
+            pass
 
 
     # <- RECIEVE ->
-
 
 
 # <-- REST OF THE CODE IS NOT MEANT TO BE USED -->

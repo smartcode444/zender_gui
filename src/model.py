@@ -194,7 +194,7 @@ class NetworkManager:
         except OSError:
             raise
 
-    def _send_file(self, name, path, rel_path, progress_callback):
+    def _send_file(self, name, path, progress_callback):
         """Send a single file over the data socket. 
             Notifies reciever on cancellation.     """
         self.tcp_send.setblocking(False)
@@ -203,7 +203,7 @@ class NetworkManager:
 
         try:
             filesize = os.path.getsize(path)
-            namebytes = rel_path.encode('utf-8') if rel_path else name.encode('utf-8')
+            namebytes = name.encode('utf-8')
             # ── Header
             # [0x01][4B name_len][name][8B file_size]
             # 8 bytes for file_size supports files up to 16 exabytes
@@ -243,6 +243,65 @@ class NetworkManager:
             except OSError:
                 pass
 
+    def _send_folder(self, folder_path, progress_callback):
+        # Get folder size and name and send to the reciever over the network
+        folder_size = None # <----------------------------------- Calculate size of folder
+
+
+        for root_dir, _, files in os.walk(folder_path):
+            for file in files:
+                full_path = os.path.join(root_dir, file)
+                folder_name = os.path.basename(folder_path)
+                rel_path    = os.path.join(folder_name, os.path.relpath(full_path, folder_path))
+                rel_path    = rel_path.replace(os.sep, '/')
+
+                self.tcp_client_socket.setblocking(False)
+                # self._cancel_flag.clear()
+                
+                try:
+                    filesize = os.path.getsize(path)
+                    
+                    namebytes = rel_path.encode('utf-8') if rel_path else name.encode('utf-8')
+        
+                    # ── Header
+                    # [0x01][4B name_len][name][8B file_size]
+                    # 8 bytes for file_size supports files up to 16 exabytes
+                    header = (b'\x01' 
+                                + len(namebytes).to_bytes(4, 'big') 
+                                + namebytes
+                                + filesize.to_bytes(8, 'big'))
+                    await loop.sock_sendall(self.tcp_client_socket, header)
+        
+                    start = time.perf_counter()
+                    with open(path, "rb") as f:
+                        sent = 0
+                        while sent < filesize:
+                            if self._cancel_flag.is_set(): # Check between chunks
+                                return f"{Back.RED}\n[!] Transfer of '{name}' stopped"
+                            chunk = f.read(65536)
+                            if not chunk:
+                                break
+                            await loop.sock_sendall(self.tcp_client_socket, chunk)
+                            sent += len(chunk)
+                            if on_progress:              
+                                on_progress(sent, filesize, start)
+                            
+        
+                    return f"  \n[OK]Sent '{name}' sent successfully"
+        
+                except asyncio.CancelledError:
+                    self.send_cancel_signal()
+                    raise
+        
+                except OSError as e:
+                    raise RuntimeError(f"{Back.RED}\n[!] Error while sending '{name}'")
+        
+                finally:
+                    try:
+                        self.tcp_client_socket.setblocking(True)
+                    except OSError:
+                        pass
+
 
     def _recieve_file(self, dest_folder, progress_callback):
         """Receive files over the data socket. 
@@ -261,47 +320,37 @@ class NetworkManager:
             return buf
 
         try:
-            while True:
-                cmd = self.tcp_recv(1)
+            name_len = int.from_bytes(recv_exact(4), 'big')
+            filename = (recv_exact(name_len)).decode('utf-8')
+            filesize = int.from_bytes(recv_exact(8), 'big')
 
-                if not cmd:
-                    return "\n[!] Connection closed by Sender"
+            # Recieve file
+            filepath = os.path.join(dest_folder, filename)
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, "wb") as f:
+                received = 0
+                while received < filesize:
+                    chunk = self.tcp_recv.recv(
+                        min(65536, filesize - received)
+                    )
+                    if not chunk:
+                        raise ConnectionError("\n[!] Connection lost mid-transfer")
+                    f.write(chunk)
+                    received += len(chunk)
+                    progress_callback(received/filesize, status)
 
-                if cmd   == b'\x03':   # CANCEL - sender stopped
-                    return "\n[!] Transfer cancelled by sender"
-                
-                elif cmd == b'\x02':   # END - allf siles done
-                    return "\n[OK] Transfer complete."
-                
-                elif cmd == b'\x01':   # File incoming
-                    name_len = int.from_bytes(recv_exact(4), 'big')
-                    filename = (recv_exact(name_len)).decode('utf-8')
-                    filesize = int.from_bytes(recv_exact(8), 'big')
-
-                    # Recieve file
-                    filepath = os.path.join(dest_folder, filename)
-                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                    with open(filepath, "wb") as f:
-                        received = 0
-                        while received < filesize:
-                            chunk = self.tcp_recv.recv(
-                                min(65536, filesize - received)
-                            )
-                            if not chunk:
-                                raise ConnectionError("\n[!] Connection lost mid-transfer")
-                            f.write(chunk)
-                            received += len(chunk)
-                            progress_callback(received/filesize)
-
-                    ConsoleView.show_message(Back.GREEN + f"[OK] '{filename}' received")
+            status = self.sending_status["SUCCESS"]
+            progress_callback(received/filesize, status)
 
 
-        except asyncio.CancelledError:
-            self.send_cancel_signal()
-            raise
+        # except asyncio.CancelledError:
+        #     self.send_cancel_signal()
+        #     raise
 
-        except ConnectionError as e:
-            return f"Socket error: {e}"
+        except (ConnectionError, BlockingIOError) as e:
+            status = self.sending_status["ERROR"]
+            progress_callback(received/filesize, status)
+            raise f"Socket error: {e}"
 
         finally:
             try:
