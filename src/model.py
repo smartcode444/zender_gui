@@ -224,27 +224,27 @@ class NetworkManager:
             except Exception:
                 pass
 
-    # def send_cancel_signal(self):
-    #     """Send a CANCEL byte to the other side via the control socket."""
-    #     ctrl = self.ctrl_socket or self.ctrl_conn
-    #     try:
-    #         ctrl.send(b'\x03')
-    #     except OSError:
-    #         pass
+    def send_cancel_signal(self):
+        """Send a CANCEL byte to the other side via the control socket."""
+        ctrl = self.ctrl_socket or self.ctrl_conn
+        try:
+            ctrl.send(b'\x03')
+        except OSError:
+            pass
 
-    # def watch_for_cancel(self):
-    #     """Runs concurrently during transfer
-    #     Blocks until the other side sends 0x03, then sets _cancel_flag."""
-    #     ctrl = self.ctrl_socket or self.ctrl_conn
-    #     ctrl.setblocking(False)
-    #     try:
-    #         while True:
-    #             data = ctrl.recv(1)
-    #             if data == b'\x03':
-    #                 self._cancel_flag.set()
-    #                 return
-    #     except OSError:
-    #         raise
+    def watch_for_cancel(self):
+        """Runs concurrently during transfer
+        Blocks until the other side sends 0x03, then sets _cancel_flag."""
+        ctrl = self.ctrl_socket or self.ctrl_conn
+        ctrl.setblocking(False)
+        try:
+            while True:
+                data = ctrl.recv(1)
+                if data == b'\x03':
+                    self._cancel_flag.set()
+                    return
+        except OSError:
+            raise
 
     def _send_file(self, name, path, progress_callback, rel_path: str = None):
         """Send a single file over the data socket.
@@ -364,11 +364,9 @@ class NetworkManager:
         return True
 
     def send_folder(self, folder_path, progress_callback):
-        """Public wrapper to send a folder (keeps API symmetry)."""
         return self._send_folder(folder_path, progress_callback)
 
     def send_file(self, path, name=None, progress_callback=None):
-        """Public wrapper: send one file. `name` optional display name."""
         if name is None:
             name = os.path.basename(path)
         return self._send_file(name, path, progress_callback)
