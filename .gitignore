@@ -1,0 +1,9 @@
+learning/
+src/__pycache__/
+src/task.txt
+src/window2.py
+src/test.py
+test/
+test_model.py
+xender.py
+.gitignore
