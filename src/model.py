@@ -174,56 +174,48 @@ class NetworkManager:
         except OSError:
             pass
 
-    # Sender side - Sends cancel signal to reciever
-    def cancel_transfer(self, filesize, sent):
-        """Send a CANCEL byte (0x03) to the peer over the control channel.
-        Silently ignore if no control channel is present or write fails.
+    # Sender side - on cancel, report exactly how many bytes it pushed into the socket
+    def cancel_transfer(self, sent_so_far):
+        """Send a CANCEL byte (0x03) and the amount of bytes pushed to the socket
+        to the peer over the control channel.
         """
-        remaining = filesize - sent
-        ctrl = self.ctrl_socket_obj()
-        if not ctrl:
-            return
         try:
-            ctrl.send(b'\x03' + remaining.to_bytes(8, 'big'))
+            # [Ox03][8B bytes_sent_into_socket]
+            self.ctrl_conn.send(b'\x03' + sent_so_far.to_bytes(8, 'big'))
         except OSError:
             pass
 
     # Reciever side - Recieves cancel signal 
-    def handle_cancel(self, remaining_bytes, poll_interval: float = 0.5):
+    def handle_cancel(self, reciever_recieved, timeout: float = 1.0):
         """Drain exactly remaining bytes from the data socket and discard"""
-        discarded = 0
-
-        # ctrl = self.ctrl_socket_obj()
-        # if not ctrl:
-        #     return
-
         try:
-            self.ctrl_conn.settimeout(poll_interval)
+            self.ctrl_conn.settimeout(timeout) # Handle cancel process should be done within a second
         except OSError:
             # If the socket is closed or doesn't support timeout, just return
             return
 
         try:
-            while discarded < remaining_bytes:
-                try:
-                    data = self.ctrl_conn.recv(min(65536, remaining_bytes - discarded))
-                    # if data == b'\x03':
-                    #     self._cancel_flag.set()
-                    #     break
-                    if not data:
-                        # remote closed control socket
+            cmd = self.ctrl_conn.recv(1)
+            if cmd == b'\x03':
+                count_bytes = b''
+                while len(count_bytes) < 8:
+                    chunk = self.ctrl_conn.recv(8 - len(count_bytes))
+                    if not chunk:
                         break
-                    discarded += len(data)
-                except socket.timeout:
-                    continue
-                except OSError:
-                    break
-        except Exception:
-            pass
-        # finally:
-        #     try:
-        #         self.ctrl_conn.settimeout(None)
+                    count_bytes += chunk
 
+                sender_sent = int.from_bytes(count_bytes, 'big')
+
+                gap = sender_sent - reciever_recieved
+                discarded = 0
+                while discarded < gap:
+                    chunk = self.tcp_recv.recv(min(65536, gap - discarded))
+                    if not chunk:
+                        break
+                    discarded += len(chunk)
+
+        except Exception:
+            raise
 
 
     def _send_file(self, name, path, progress_callback, rel_path: str = None):
@@ -273,7 +265,7 @@ class NetworkManager:
                     if self._cancel_flag.is_set():
                         # local or remote requested cancel -> notify peer and abort
                         try:
-                            self.cancel_transfer(filesize, sent)
+                            self.cancel_transfer(sent)
                             return
                         except Exception:
                             pass
@@ -294,7 +286,7 @@ class NetworkManager:
                         progress_callback(sent / max(1, filesize), status)
                         # notify peer if possible then re-raise
                         try:
-                            self.cancel_transfer(filesize, sent)
+                            self.cancel_transfer(sent)
                             return
                         except Exception:
                             pass
@@ -366,7 +358,7 @@ class NetworkManager:
     def _recieve_file(self, dest_folder, progress_callback):
         """Receive files over the data socket. 
         Shuts down socket on cancellation so sender unblocks."""
-        self.tcp_recv.setblocking(False)
+        # self.tcp_recv.setblocking(False)
         self.clear_cancel_signal()
         status = self.sending_status["LOADING"]
 
@@ -374,17 +366,29 @@ class NetworkManager:
             """Await exactly n bytes"""
             buf = b''
             while len(buf) < n:
-                chunk = self.tcp_recv.recv(n - len(buf))
-                if not chunk:
-                    raise ConnectionError("[!] Connection closed by sender")
-                buf += chunk
-            return buf
+                readable, _, _ = select.selct([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+                
+                if not readable:
+                    self.handle_cancel(len(buf))
+                    raise RuntimeError("Timeout - connection may be dead")
 
-        # Start watcher thread to detect remote CANCEL bytes on control channel
-        # watcher = threading.Thread(target=self.handle_cancel, daemon=True)
-        # watcher.start()
+                if self.ctrl_conn in readable:
+                    self.handle_cancel(len(buf))
+                    raise RuntimeError("Sender cancelled - Stop recieving")
+
+                if self._cancel_flag.is_set():
+                    self.handle_cancel(len(buf))
+                    raise RuntimeError("[!] Transfer cancelled by sender")
+
+                if self.tcp_recv in readable:
+                    chunk = self.tcp_recv.recv(n - len(buf))
+                    if not chunk:
+                        raise ConnectionError("[!] Connection closed by sender")
+                    buf += chunk
+                return buf
 
         try:
+            recieved = 0
             name_len = int.from_bytes(recv_exact(4), 'big')
             filename = (recv_exact(name_len)).decode('utf-8')
             filesize = int.from_bytes(recv_exact(8), 'big')
@@ -393,63 +397,130 @@ class NetworkManager:
             filepath = os.path.join(dest_folder, filename)
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, "wb") as f:
-                received = 0
-                while received < filesize:
-                    remaining = filesize - received
+                while recieved < filesize:
                     # Watch Both sockets simultaneously 
-                    readable, _, _ = select.selct([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+                    readable, _, _ = select.select([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
 
                     if not readable:
-                        progress_callback(received / max(1, filesize), status)
-                        self.handle_cancel(self, remaining)
+                        self.handle_cancel(recieved)
                         raise RuntimeError("Timeout - connection may be dead")
 
                     if self.ctrl_conn in readable:
-                        progress_callback(received / max(1, filesize), status)
-                        self.handle_cancel(self, remaining)
+                        self.handle_cancel(recieved)
                         raise RuntimeError("Sender cancelled - Stop recieving")
 
                     if self._cancel_flag.is_set():
-                        status = self.recieving_status["ERROR"]
-                        progress_callback(received / max(1, filesize), status)
-                        self.cancel_transfer()
+                        self.handle_cancel(recieved)
                         raise RuntimeError("[!] Transfer cancelled by sender")
 
                     if self.tcp_recv in readable:
                         chunk = self.tcp_recv.recv(
-                            min(65536, filesize - received)
+                            min(65536, filesize - recieved)
                         )
                         if not chunk:
                             raise ConnectionError("\n[!] Connection lost mid-transfer")
                         f.write(chunk)
-                        received += len(chunk)
-                        progress_callback(received/filesize, status)
+                        recieved += len(chunk)
+                        progress_callback(recieved/filesize, status)
 
             status = self.sending_status["SUCCESS"]
-            progress_callback(received/filesize, status)
-
-
-        # except asyncio.CancelledError:
-        #     self.cancel_transfer()
-        #     raise
+            progress_callback(recieved/filesize, status)
 
         except (ConnectionError, BlockingIOError, RuntimeError) as e:
             status = self.recieving_status.get("ERROR", 2)
             # best-effort progress update
             try:
-                progress_callback(0.0, status)
+                progress_callback(recieved / max(1, filesize), status)
             except Exception:
                 pass
             raise
 
-        finally:
-            try:
-                self.tcp_recv.setblocking(True)
-            except OSError:
-                pass
         
-    def _recieve_folder():
-        pass
+    def _recieve_folder(self, folder_size, dest_folder, progress_callback):
+        """Recieve folders"""
+        # self.tcp_recv.setblocking(False)
+        self.clear_cancel_signal()
+        status = self.sending_status["LOADING"]
+
+        def recv_exact(n: int) -> bytes:
+            """Await exactly n bytes"""
+            buf = b''
+            while len(buf) < n:
+                readable, _, _ = select.select([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+                
+                if not readable:
+                    self.handle_cancel(len(buf))
+                    raise RuntimeError("Timeout - connection may be dead")
+
+                if self.ctrl_conn in readable:
+                    self.handle_cancel(len(buf))
+                    raise RuntimeError("Sender cancelled - Stop recieving")
+
+                if self._cancel_flag.is_set():
+                    self.handle_cancel(len(buf))
+                    raise RuntimeError("[!] Transfer cancelled by sender")
+
+                if self.tcp_recv in readable:
+                    chunk = self.tcp_recv.recv(n - len(buf))
+                    if not chunk:
+                        raise ConnectionError("[!] Connection closed by sender")
+                    buf += chunk
+                return buf
+
+        # Need - filename, - recieved_bytes
+        recieved_folder = 0 # Total bytes recieved in sent folder
+        while recieved_folder < folder_size: 
+            try:
+                path_name_len = int.from_bytes(recv_exact(4), 'big')
+                relpath = (recv_exact(path_name_len)).decode('utf-8')
+                filesize = int.from_bytes(recv_exact(8), 'big')
+
+                # Recieve file
+                filepath = os.path.join(dest_folder, relpath)
+                os.makedirs(os.path.dirname(filepath), exist_ok=True) # Recreate directory structure in reciever end
+
+                with open(filepath, "wb") as f:
+                    recieved_file = 0
+
+                    while recieved_file < filesize:
+                        # remaining = filesize - recieved_file
+                        # Watch Both sockets simultaneously 
+                        readable, _, _ = select.selct([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+
+                        if not readable:
+                            self.handle_cancel(recieved_file)
+                            raise RuntimeError("Timeout - connection may be dead")
+
+                        if self.ctrl_conn in readable:
+                            self.handle_cancel(recieved_file)
+                            raise RuntimeError("Sender cancelled - Stop recieving")
+
+                        if self._cancel_flag.is_set():
+                            self.handle_cancel(recieved_file)
+                            raise RuntimeError("[!] Transfer cancelled by sender")
+
+                        if self.tcp_recv in readable:
+                            chunk = self.tcp_recv.recv(
+                                min(65536, filesize - recieved_file)
+                            )
+                            if not chunk:
+                                raise ConnectionError("\n[!] Connection lost mid-transfer")
+                            f.write(chunk)
+                            recieved_file += len(chunk)
+                            progress_callback(recieved_folder/folder_size, status)
+
+
+                status = self.sending_status["SUCCESS"]
+                progress_callback(recieved_folder/folder_size, status)
+
+            except (ConnectionError, BlockingIOError, RuntimeError) as e:
+                status = self.recieving_status.get("ERROR", 2)
+                # best-effort progress update
+                try:
+                    progress_callback(recieved_folder / max(1, folder_size), status)
+                except Exception:
+                    pass
+                raise
 
 
 def get_all_broadcast_addresses():
