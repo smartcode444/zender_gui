@@ -7,7 +7,9 @@ import os
 
 
 class NetworkManager:
-    def __init__(self, username: str):
+    def __init__(self, controller, username: str):
+        self.controller        = controller
+
         self.UDP_PORT          = 7007
         self.TCP_PORT          = 5005
         self.CTRL_PORT         = 5006
@@ -18,6 +20,9 @@ class NetworkManager:
         self.RESPONSE_MESSAGE  = "I_SEE_U"
 
         self.name              = username
+
+        self.recv_filename     = None
+        self.recv_foldername   = None
 
         self.tcp_send_server   = None
         self.tcp_recv_server   = None 
@@ -75,8 +80,8 @@ class NetworkManager:
             raise
 
         # Filter out echoes of my own broadcast
-        # if data.startswith(message):
-        #     return None, None
+        if data.startswith(message):
+            return None, None
 
         decoded = data.decode('utf-8').strip()   
         if decoded[:7] == "I_SEE_U":
@@ -113,8 +118,8 @@ class NetworkManager:
     def init_scan_socks(self):
         """Intialize sockets for scanning."""
         self.selected_mode = "scan"
-        self.tcp_send = socket.socket(socket.AF_INET, socket.SOCK_STREAM)        
-        self.tcp_recv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)       
+        self.tcp_send  = socket.socket(socket.AF_INET, socket.SOCK_STREAM)        
+        self.tcp_recv  = socket.socket(socket.AF_INET, socket.SOCK_STREAM)       
         self.ctrl_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
         
     
@@ -122,6 +127,9 @@ class NetworkManager:
         """Scan for devices on the network."""
         try:
             data, address = self.udp_socket.recvfrom(1024)
+            if not data:
+                print("Recived nothing!!!")
+            # print(f"Data: {data}") 
         except socket.timeout:
             raise socket.timeout
 
@@ -132,7 +140,6 @@ class NetworkManager:
         username_len  = data[0]
         client_name   = data[1:1+username_len].decode('utf-8')
         client_msg    = data[1+username_len:].decode('utf-8')
-
         if client_msg == "XENDER_DISCOVERY_REQUEST" and client_name not in devices:
             try:
                 self.udp_socket.sendto(msg, (address))
@@ -144,6 +151,7 @@ class NetworkManager:
         return None, None
 
     def sc_connect(self, device_addr):
+        print("Device address in sc_connect:", device_addr)
         self.tcp_send.settimeout(1.0)
         self.tcp_recv.settimeout(1.0)
         self.ctrl_conn.settimeout(1.0)
@@ -246,10 +254,6 @@ class NetworkManager:
         # build header: [4B name_len][name][8B file_size]
         header = len(namebytes).to_bytes(4, 'big') + namebytes + filesize.to_bytes(8, 'big')
 
-        # Start a background watcher for remote CANCEL signals
-        # watcher = threading.Thread(target=self.handle_cancel, daemon=True)
-        # watcher.start()
-
         try:
             # send header (blocking)
             self.tcp_send.sendall(header)
@@ -305,20 +309,23 @@ class NetworkManager:
             except Exception as e:
                 pass
 
-
+            
     def _send_folder(self, folder_path, progress_callback):
         # Build the list of files and total size for progress calculation
         folder_size = 0
         files_list = []  # list of tuples (full_path, rel_path)
 
-        base_folder_name = os.path.basename(folder_path)
+        base_foldername = os.path.basename(folder_path)
         for root_dir, _, files in os.walk(folder_path):
             for file in files:
                 full_path = os.path.join(root_dir, file)
                 rel_path = os.path.relpath(full_path, folder_path)
-                rel_path = os.path.join(base_folder_name, rel_path).replace(os.sep, '/')
+                rel_path = os.path.join(base_foldername, rel_path).replace(os.sep, '/')
                 files_list.append((full_path, rel_path))
                 folder_size += os.path.getsize(full_path)
+
+        # Send folder size to reciever
+        self.tcp_send.send(folder_size.to_bytes(8, 'big'))
 
         # Informal progress: iterate through each file and send as _send_file
         total_sent = 0
@@ -355,7 +362,7 @@ class NetworkManager:
         return self._send_file(name, path, progress_callback)
 
 
-    def _recieve_file(self, dest_folder, progress_callback):
+    def _recieve_file(self, dest_folder):
         """Receive files over the data socket. 
         Shuts down socket on cancellation so sender unblocks."""
         # self.tcp_recv.setblocking(False)
@@ -391,6 +398,9 @@ class NetworkManager:
             recieved = 0
             name_len = int.from_bytes(recv_exact(4), 'big')
             filename = (recv_exact(name_len)).decode('utf-8')
+
+            progress_callback = self.controller.register_incoming_transfer(filename)
+
             filesize = int.from_bytes(recv_exact(8), 'big')
 
             # Recieve file
@@ -436,7 +446,7 @@ class NetworkManager:
             raise
 
         
-    def _recieve_folder(self, folder_size, dest_folder, progress_callback):
+    def _recieve_folder(self, dest_folder):
         """Recieve folders"""
         # self.tcp_recv.setblocking(False)
         self.clear_cancel_signal()
@@ -467,12 +477,18 @@ class NetworkManager:
                     buf += chunk
                 return buf
 
+        folder_size = int.from_bytes(recv_exact(8), 'big')
+
         # Need - filename, - recieved_bytes
         recieved_folder = 0 # Total bytes recieved in sent folder
         while recieved_folder < folder_size: 
             try:
                 path_name_len = int.from_bytes(recv_exact(4), 'big')
                 relpath = (recv_exact(path_name_len)).decode('utf-8')
+
+                folder_name = os.path.basename(relpath)
+                progress_callback = self.controller.register_incoming_transfer(folder_name)
+
                 filesize = int.from_bytes(recv_exact(8), 'big')
 
                 # Recieve file

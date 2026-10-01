@@ -1,6 +1,8 @@
 import customtkinter as ctk
 import os
 from tkinter import filedialog
+from pathlib import Path
+import threading
 # from controller import XenderController
 from src.controller import XenderController
 
@@ -93,14 +95,12 @@ class P2PApp(ctk.CTk):
         self.show_view(ConnectedTransferView)
 
     def refresh_scan_devices(self, devices):
-        devices_list = []
-        for name, addr in devices.items():
-            devices_list.append(name + " " + (addr[0]))
         self.frames[ScanningView].display_devices(devices)
+        self.show_view(ScanningView)
 
     def refresh_scanners(self, device):
         self.frames[BroadcastingView].display_device(device)
-
+        self.show_view(BroadcastingView)
 
     def start_scan(self):
         self.controller.run_scan()
@@ -114,6 +114,24 @@ class P2PApp(ctk.CTk):
     def send_folder(self, path, progress_callback):
         self.controller.send_folder(path, progress_callback)
 
+    def register_incoming_transfer(self, item_name: str):
+        """Called by the background listener thread to create a UI row safely."""
+        callback_holder = {}
+        event = threading.Event()
+
+        def _create_ui():
+            transfer_view = self.frames[ConnectedTransferView]
+            callback_holder["callback"] = transfer_view.start_incoming_transfer(item_name)
+            event.set()
+
+        # Schedule UI creation on Tkinter's main loop
+        self.after(0, _create_ui)
+
+        # Wait until the main thread finishes making the row
+        event.wait()
+        return callback_holder["callback"]
+
+    
 # -------------------------------------------------------------
 #  MAIN SELECTION VIEW (Scan vs Broadcast)
 # -------------------------------------------------------------
@@ -174,14 +192,11 @@ class ScanningView(ctk.CTkFrame):
         self.device_list_frame = ctk.CTkScrollableFrame(self, corner_radius=8)
         self.device_list_frame.pack(fill="both", expand=True, pady=10)
 
-    def display_devices(self, devices): 
+    def display_devices(self, devices: dict): 
         self.devices = devices
 
     def on_show(self):
         self.clear_devices()
-        # devices = ["Laptop-Beta (192.168.1.12)", "Workstation-Gamma (192.168.1.45)", "NUC-Delta (192.168.1.89)"]
-        # for dev in devices:
-        #     self.add_discovered_device(dev)
         if self.devices:
             for dev_name, dev_addr in self.devices.items():
                 self.add_discovered_device((dev_name, dev_addr))
@@ -198,7 +213,7 @@ class ScanningView(ctk.CTkFrame):
         row = ctk.CTkFrame(self.device_list_frame)
         row.pack(fill="x", pady=5, padx=5)
 
-        lbl = ctk.CTkLabel(row, text=f"💻  {dev_name[0]} ({dev_addr})", font=ctk.CTkFont(size=14))
+        lbl = ctk.CTkLabel(row, text=f"💻  {dev_name} ({dev_addr[0]}:{dev_addr[1]})", font=ctk.CTkFont(size=14))
         lbl.pack(side="left", padx=15, pady=12)
 
         btn = ctk.CTkButton(
@@ -336,6 +351,15 @@ class ConnectedTransferView(ctk.CTkFrame):
         if hasattr(self.app, "send_folder"):
             self.app.send_folder(folderpath, progress_callback)
 
+    # def action_recv_folder(self, folder_name):
+    #     # downloads_path = Path.home() / "Downloads"
+    #     progress_callback = self.add_transfer_item(self.recv_list_frame, f"Folder: {folder_name}", 0.0)
+    #     return progress_callback
+
+    # def action_recv_file(self, file_name):
+    #     progress_callback = self.add_transfer_item(self.recv_list_frame, f"File: {file_name}", 0.0)
+    #     return progress_callback
+
     def add_transfer_item(self, parent_frame, item_name: str, progress_val: float = 0.0):
         """Builds a transfer row and returns a thread-safe update function."""
         row = ctk.CTkFrame(parent_frame)
@@ -410,6 +434,15 @@ class ConnectedTransferView(ctk.CTkFrame):
             self.after(0, _apply_update, value, status)
 
         return update_progress
+
+    def start_incoming_transfer(self, item_name: str):
+        """Creates a row in the Receiving tab and returns the progress callback."""
+        # Auto-switch to the Receiving tab so the user sees the incoming file
+        self.tabview.set("Receiving")
+        
+        # Build the row inside recv_list_frame and return the callback
+        return self.add_transfer_item(self.recv_list_frame, item_name, 0.0)
+
 
 if __name__ == "__main__":
     app = P2PApp("smartcode")
