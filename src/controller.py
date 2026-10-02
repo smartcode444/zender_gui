@@ -26,8 +26,7 @@ class XenderController():
         self.is_scanning = threading.Event()
         self.is_broadcasting = threading.Event()
         self.is_connecting = threading.Event()
-        # self.scanned_devices = queue.Queue()
-        # self.scanners = queue.Queue()
+    
         self.send_file_queue = queue.Queue()
         self.send_folder_queue = queue.Queue()
         self.scanned_devices = None
