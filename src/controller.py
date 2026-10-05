@@ -124,7 +124,6 @@ class XenderController():
         self.is_broadcasting.clear()
         print("Broadcasting stopped")
 
-
     def broadcast_connect(self):
         while self.is_connecting:
             try:

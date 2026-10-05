@@ -365,7 +365,6 @@ class NetworkManager:
     def _recieve_file(self, dest_folder):
         """Receive files over the data socket. 
         Shuts down socket on cancellation so sender unblocks."""
-        # self.tcp_recv.setblocking(False)
         self.clear_cancel_signal()
         status = self.sending_status["LOADING"]
 
@@ -499,7 +498,6 @@ class NetworkManager:
                     recieved_file = 0
 
                     while recieved_file < filesize:
-                        # remaining = filesize - recieved_file
                         # Watch Both sockets simultaneously 
                         readable, _, _ = select.selct([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
 
