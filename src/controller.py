@@ -13,9 +13,6 @@ class FileInfo:
     name: str          
     relative_path: str  
 
-def async_key_pressed():
-    pass
-
 class XenderController():
     def __init__(self, app, username):
         self.model = NetworkManager(self, username)
