@@ -94,6 +94,7 @@ class XenderController():
 
     def _broadcast_worker(self):
         print("broadcasting...")
+        dev: tuple[str, tuple[str, int]] = (None, None)
         self.model.init_bd_socks()
 
         username_bytes = self.username.encode('utf-8')
@@ -108,7 +109,7 @@ class XenderController():
             except socket.timeout:
                 continue
 
-            if dev and self.scanners !=  dev:
+            if dev != (None, None) and self.scanners !=  dev:
                 self.scanners = dev
                 self.app.after(0, self.app.refresh_scanners, self.scanners)
 
@@ -210,3 +211,12 @@ class XenderController():
                 self.model.recieve_folder(downloads_path)
             except Exception as e:
                 print(f"Error sending folder_path: {e}")
+
+    def shut_down(self):
+        print("Shutting down...")
+        self.running = False
+        self.end_scan()
+        self.end_broadcast()
+        self.end_connecting()
+        self.end_connection()
+        self.model.close_sockets()

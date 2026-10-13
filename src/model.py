@@ -10,9 +10,9 @@ class NetworkManager:
     def __init__(self, controller, username: str):
         self.controller        = controller
 
-        self.UDP_PORT          = 7007
-        self.TCP_PORT          = 5005
-        self.CTRL_PORT         = 5006
+        self.UDP_PORT          = 7008
+        self.TCP_PORT          = 5009
+        self.CTRL_PORT         = 5008
         self.INTERFACES        = get_all_broadcast_addresses()
         self.own_ips           = {ip for _, ip in self.INTERFACES}
 
@@ -44,6 +44,22 @@ class NetworkManager:
         self.udp_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)
         self.udp_socket.bind(('', self.UDP_PORT))
         self.udp_socket.settimeout(1.0)
+
+    def close_sockets(self):
+        """Close all sockets."""
+        try:
+            if self.tcp_send:
+                self.tcp_send.close()
+            if self.tcp_recv:
+                self.tcp_recv.close()
+            if self.ctrl_conn:
+                self.ctrl_conn.close()
+            if self.tcp_send_server:
+                self.tcp_send_server.close()
+            if self.tcp_recv_server:
+                self.tcp_recv_server.close()
+        except Exception as e:
+            print(f"[!] Error closing sockets: {e}")
 
     def init_bd_socks(self):
         """Intialize sockets for broadcasting."""

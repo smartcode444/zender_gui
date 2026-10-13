@@ -240,8 +240,8 @@ class ScanningView(ctk.CTkFrame):
 class BroadcastingView(ctk.CTkFrame):
     def __init__(self, parent, app: P2PApp):
         super().__init__(parent, fg_color="transparent")
-        self.app = app
-        self.device = None
+        self.app: P2PApp = app
+        self.device: tuple[str, str] = (None, None)  # (name, (ip, port))
 
         self.header = ctk.CTkLabel(self, text="Broadcasting...", font=ctk.CTkFont(size=22, weight="bold"))
         self.header.pack(pady=(10, 5), anchor="w")
@@ -252,18 +252,19 @@ class BroadcastingView(ctk.CTkFrame):
         self.incoming_list_frame = ctk.CTkScrollableFrame(self, corner_radius=8)
         self.incoming_list_frame.pack(fill="both", expand=True, pady=10)
 
-    def display_device(self, device):
+    def display_device(self, device: tuple[str, str]):
         self.device = device
+        print(f"Broadcasting device info: {self.device}")
 
     def on_show(self):
-        print(self.device)
+        print(f"Device: {self.device}")
         for widget in self.incoming_list_frame.winfo_children():
             widget.destroy()
-        if self.device:
-            print(self.device)
+        if self.device != (None, None):
+            print(f"Device: {self.device}")
             self.add_incoming_request(self.device)
 
-    def add_incoming_request(self, requester_info: tuple[str, str]):
+    def add_incoming_request(self, requester_info: tuple[str, tuple[str, int]]):
         requester_name = requester_info[0]
         requester_addr = requester_info[1][0]
         requester_port = requester_info[1][1]
@@ -447,3 +448,4 @@ class ConnectedTransferView(ctk.CTkFrame):
 if __name__ == "__main__":
     app = P2PApp("smartcode")
     app.mainloop()
+    app.controller.shut_down()  # Ensure all threads and sockets are closed on exit
