@@ -84,11 +84,13 @@ class XenderController():
         while self.is_connecting:
             try:
                 self.model.sc_connect(dev_ip)
+                self.end_connecting()
+                self.set_connection()
             except socket.timeout:
                 continue
             except Exception as e:
                 print(f"[!] Error connecting to: {e}.")
-                break
+                self.end_connecting()
         
     # <- BROADCAST ->
 
@@ -126,12 +128,13 @@ class XenderController():
         while self.is_connecting:
             try:
                 self.model.bd_connect()
-                break
+                self.end_connecting()
+                self.set_connection()
             except socket.timeout:
                 continue
             except Exception as e:
                 print(f"[!] Error connecting to: {e}.")
-                break
+                self.end_connecting()
 
     def connect(self, mode, dev_addr=None):
         self.is_connecting.set()
@@ -170,8 +173,7 @@ class XenderController():
                 self.send_file_queue.task_done()
 
     def send_file(self, path, progress_callback):
-        self.set_connection()
-        self.send_folder_queue.put((path, progress_callback))
+        self.send_file_queue.put((path, progress_callback))
 
     def _send_folder_worker(self):
         while self.is_connected.is_set():
@@ -191,7 +193,7 @@ class XenderController():
 
     def send_folder(self, path, progress_callback):
         self.set_connection()
-        self.send_queue.put((path, progress_callback))
+        self.send_folder_queue.put((path, progress_callback))
 
     def register_incoming_transfer(self, item_name):
         return self.app.register_incoming_transfer(item_name)

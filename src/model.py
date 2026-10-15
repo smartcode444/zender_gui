@@ -5,14 +5,15 @@ import struct
 import psutil
 import os
 
-
 class NetworkManager:
     def __init__(self, controller, username: str):
         self.controller        = controller
 
-        self.UDP_PORT          = 7008
-        self.TCP_PORT          = 5009
-        self.CTRL_PORT         = 5008
+        self.UDP_PORT          = 7018
+        self.TCP_SEND_PORT     = 5017
+        self.TCP_RECV_PORT     = 5018
+        self.CTRL_PORT         = 5019
+        self.CONNECTION_TIMEOUT = 10.0
         self.INTERFACES        = get_all_broadcast_addresses()
         self.own_ips           = {ip for _, ip in self.INTERFACES}
 
@@ -47,19 +48,17 @@ class NetworkManager:
 
     def close_sockets(self):
         """Close all sockets."""
-        try:
-            if self.tcp_send:
-                self.tcp_send.close()
-            if self.tcp_recv:
-                self.tcp_recv.close()
-            if self.ctrl_conn:
-                self.ctrl_conn.close()
-            if self.tcp_send_server:
-                self.tcp_send_server.close()
-            if self.tcp_recv_server:
-                self.tcp_recv_server.close()
-        except Exception as e:
-            print(f"[!] Error closing sockets: {e}")
+        for name in (
+            "tcp_send",
+            "tcp_recv",
+            "ctrl_conn",
+            "ctrl_server",
+            "tcp_send_server",
+            "tcp_recv_server",
+        ):
+            sock = getattr(self, name, None)
+            if sock is not None:
+                sock.close()
 
     def init_bd_socks(self):
         """Intialize sockets for broadcasting."""
@@ -72,12 +71,12 @@ class NetworkManager:
 
         self.tcp_send_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_send_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
-        self.tcp_send_server.bind(('', self.TCP_PORT))
+        self.tcp_send_server.bind(('', self.TCP_SEND_PORT))
         self.tcp_send_server.listen(1)
 
         self.tcp_recv_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_recv_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
-        self.tcp_recv_server.bind(('', self.TCP_PORT))
+        self.tcp_recv_server.bind(('', self.TCP_RECV_PORT))
         self.tcp_recv_server.listen(1)
 
 
@@ -110,25 +109,31 @@ class NetworkManager:
 
     
     def bd_connect(self):
-        self.tcp_send_server.settimeout(1.0)   
-        self.tcp_recv_server.settimeout(1.0)   
-        self.ctrl_server.settimeout(1.0)   
+        """Accept all three channels for one incoming connection attempt."""
+        listeners = (
+            self.tcp_send_server,
+            self.tcp_recv_server,
+            self.ctrl_server,
+        )
+        for listener in listeners:
+            listener.settimeout(self.CONNECTION_TIMEOUT)
+
         try:
             self.tcp_send, _ = self.tcp_send_server.accept()
-            self.tcp_send_server.close()
-
             self.tcp_recv, _ = self.tcp_recv_server.accept()
-            self.tcp_recv_server.close()
-
             self.ctrl_conn, _ = self.ctrl_server.accept()
-            self.ctrl_server.close()
 
         except socket.timeout:
+            self.close_sockets()
+            self.init_bd_socks()
             raise socket.timeout 
     
         except Exception as e:
-            self.tcp_send_server.close()
+            self.close_sockets()
             raise e
+
+        for listener in listeners:
+            listener.close()
     
 
     def init_scan_socks(self):
@@ -168,18 +173,21 @@ class NetworkManager:
 
     def sc_connect(self, device_addr):
         print("Device address in sc_connect:", device_addr)
-        self.tcp_send.settimeout(1.0)
-        self.tcp_recv.settimeout(1.0)
-        self.ctrl_conn.settimeout(1.0)
+        for connection in (self.tcp_send, self.tcp_recv, self.ctrl_conn):
+            connection.settimeout(self.CONNECTION_TIMEOUT)
+
         try:
-            self.tcp_send.connect((device_addr, self.TCP_PORT))
-            self.tcp_recv.connect((device_addr, self.TCP_PORT))
+            self.tcp_send.connect((device_addr, self.TCP_SEND_PORT))
+            self.tcp_recv.connect((device_addr, self.TCP_RECV_PORT))
             self.ctrl_conn.connect((device_addr, self.CTRL_PORT))
 
         except socket.timeout:
+            self.close_sockets()
+            self.init_scan_socks()
             raise socket.timeout
 
         except Exception as e:
+            self.close_sockets()
             raise e
 
 
@@ -388,7 +396,7 @@ class NetworkManager:
             """Await exactly n bytes"""
             buf = b''
             while len(buf) < n:
-                readable, _, _ = select.selct([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+                readable, _, _ = select.select([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
                 
                 if not readable:
                     self.handle_cancel(len(buf))
@@ -407,7 +415,7 @@ class NetworkManager:
                     if not chunk:
                         raise ConnectionError("[!] Connection closed by sender")
                     buf += chunk
-                return buf
+            return buf
 
         try:
             recieved = 0
@@ -490,7 +498,7 @@ class NetworkManager:
                     if not chunk:
                         raise ConnectionError("[!] Connection closed by sender")
                     buf += chunk
-                return buf
+            return buf
 
         folder_size = int.from_bytes(recv_exact(8), 'big')
 
@@ -515,7 +523,7 @@ class NetworkManager:
 
                     while recieved_file < filesize:
                         # Watch Both sockets simultaneously 
-                        readable, _, _ = select.selct([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+                        readable, _, _ = select.select([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
 
                         if not readable:
                             self.handle_cancel(recieved_file)
@@ -552,6 +560,11 @@ class NetworkManager:
                     pass
                 raise
 
+    def recieve_folder(self, dest_folder):
+        return self._recieve_folder(dest_folder)
+    
+    def recieve_file(self, dest_folder):
+        return self._recieve_file(dest_folder)
 
 def get_all_broadcast_addresses():
     """
