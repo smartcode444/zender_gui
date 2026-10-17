@@ -49,7 +49,7 @@ class NetworkManager:
     def close_sockets(self):
         """Close all sockets."""
         for name in (
-            "tcp_conn"
+            "tcp_conn",
             "tcp_server",
             "ctrl_conn",
             "ctrl_server",
@@ -57,6 +57,7 @@ class NetworkManager:
             sock = getattr(self, name, None)
             if sock is not None:
                 sock.close()
+                setattr(self, name, None)
 
     def init_bd_socks(self):
         """Intialize sockets for broadcasting."""
@@ -69,7 +70,7 @@ class NetworkManager:
 
         self.tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
-        self.tcp_server.bind(('', self.TCP_conn_PORT))
+        self.tcp_server.bind(('', self.TCP_PORT))
         self.tcp_server.listen(1)
 
 
@@ -277,6 +278,7 @@ class NetworkManager:
             self.tcp_conn.sendall(header)
 
             sent = 0
+            last_reported = 0
             with open(path, 'rb') as f:
                 while sent < filesize:
                     # _, writable, _ = select.select([], [self.ctrl_conn], [], 0.1)
@@ -315,7 +317,9 @@ class NetworkManager:
                         raise RuntimeError(f"[!] Error while sending '{name}': {e}")
 
                     sent += len(chunk)
-                    progress_callback(sent / filesize, status)
+                    if sent - last_reported >= 65536 or sent == filesize:
+                        progress_callback(sent / filesize, status)
+                        last_reported = sent
 
             status = self.sending_status["SUCCESS"]
             progress_callback(1.0, status)
@@ -425,6 +429,7 @@ class NetworkManager:
             filepath = os.path.join(dest_folder, filename)
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, "wb") as f:
+                last_reported = 0
                 while recieved < filesize:
                     # Watch Both sockets simultaneously 
                     readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
@@ -449,7 +454,9 @@ class NetworkManager:
                             raise ConnectionError("\n[!] Connection lost mid-transfer")
                         f.write(chunk)
                         recieved += len(chunk)
-                        progress_callback(recieved/filesize, status)
+                        if recieved - last_reported >= 65536 or recieved == filesize:
+                            progress_callback(recieved/filesize, status)
+                            last_reported = recieved
 
             status = self.sending_status["SUCCESS"]
             progress_callback(recieved/filesize, status)
@@ -515,6 +522,7 @@ class NetworkManager:
 
                 with open(filepath, "wb") as f:
                     recieved_file = 0
+                    last_reported = 0
 
                     while recieved_file < filesize:
                         # Watch Both sockets simultaneously 
@@ -540,7 +548,9 @@ class NetworkManager:
                                 raise ConnectionError("\n[!] Connection lost mid-transfer")
                             f.write(chunk)
                             recieved_file += len(chunk)
-                            progress_callback(recieved_folder/folder_size, status)
+                            if recieved_file - last_reported >= 65536 or recieved_file == filesize:
+                                progress_callback(recieved_folder/folder_size, status)
+                                last_reported = recieved_file
 
 
                 status = self.sending_status["SUCCESS"]

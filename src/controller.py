@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from dataclasses import dataclass
 from src.model import NetworkManager
-from src.window2 import P2PApp
+from src.window import P2PApp
 
 @dataclass
 class FileInfo:

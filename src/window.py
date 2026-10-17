@@ -118,21 +118,32 @@ class P2PApp(ctk.CTk):
         self.controller.send_folder(path, progress_callback)
 
     def register_incoming_transfer(self, item_name: str):
-        """Called by the background listener thread to create a UI row safely."""
+        """Create the incoming-transfer row without blocking the transfer thread."""
         callback_holder = {}
-        event = threading.Event()
+        pending_updates = []
+
+        def _flush_pending():
+            callback = callback_holder.get("callback")
+            if callback is None:
+                return
+            for value, status in pending_updates:
+                callback(value, status)
+            pending_updates.clear()
 
         def _create_ui():
             transfer_view = self.frames[ConnectedTransferView]
             callback_holder["callback"] = transfer_view.start_incoming_transfer(item_name)
-            event.set()
+            _flush_pending()
 
-        # Schedule UI creation on Tkinter's main loop
+        def progress_callback(value: float, status: int):
+            callback = callback_holder.get("callback")
+            if callback is None:
+                pending_updates.append((value, status))
+                return
+            callback(value, status)
+
         self.after(0, _create_ui)
-
-        # Wait until the main thread finishes making the row
-        event.wait()
-        return callback_holder["callback"]
+        return progress_callback
 
     
 # -------------------------------------------------------------
