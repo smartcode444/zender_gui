@@ -288,7 +288,7 @@ class BroadcastingView(ctk.CTkFrame):
 # 4. CONNECTED TRANSFER VIEW (Tabs for Sending & Receiving)
 # -------------------------------------------------------------
 class ConnectedTransferView(ctk.CTkFrame):
-    def __init__(self, parent, app):
+    def __init__(self, parent, app: P2PApp):
         super().__init__(parent, fg_color="transparent")
         self.app = app
 

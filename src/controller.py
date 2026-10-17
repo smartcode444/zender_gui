@@ -185,6 +185,7 @@ class XenderController():
 
             # Send the file over backend socket
             try:
+                file_path = Path(file_path)
                 name = os.path.basename(file_path)
                 self.model._send_file(name, file_path, progress_callback, rel_path=None)
             except Exception as e:
@@ -207,6 +208,7 @@ class XenderController():
 
             # Send the file over backend socket
             try:
+                folder_path = Path(folder_path)
                 norm_folder_path = os.path.normpath(folder_path)
                 self.model.send_folder(norm_folder_path, progress_callback)
             except Exception as e:
