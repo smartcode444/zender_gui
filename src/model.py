@@ -238,8 +238,10 @@ class NetworkManager:
                     if not chunk:
                         break
                     discarded += len(chunk)
+            self.ctrl_conn.settimeout(None)
 
         except Exception:
+            self.ctrl_conn.settimeout(None)
             raise
 
 
@@ -260,6 +262,9 @@ class NetworkManager:
         send a CANCEL byte to the peer and abort the transfer.
         """
         # Use the provided relative path name for header if given
+        self.ctrl_conn.settimeout(None)
+        self.tcp_conn.settimeout(None)
+
         header_name = rel_path if rel_path is not None else name
 
         self.clear_cancel_signal()    # <--------
@@ -267,7 +272,6 @@ class NetworkManager:
 
         filesize = os.path.getsize(path)
         namebytes = header_name.encode('utf-8')
-
         # build header: [4B name_len][name][8B file_size]
         header = len(namebytes).to_bytes(4, 'big') + namebytes + filesize.to_bytes(8, 'big')
 
@@ -333,6 +337,9 @@ class NetworkManager:
 
             
     def _send_folder(self, folder_path, progress_callback):
+        self.ctrl_conn.settimeout(None)
+        self.tcp_conn.settimeout(None)
+
         # Build the list of files and total size for progress calculation
         folder_size = 0
         files_list = []  # list of tuples (full_path, rel_path)
@@ -388,6 +395,9 @@ class NetworkManager:
     def _recieve_file(self, dest_folder):
         """Receive files over the data socket. 
         Shuts down socket on cancellation so sender unblocks."""
+        self.ctrl_conn.settimeout(None)
+        self.tcp_conn.settimeout(None)
+
         self.clear_cancel_signal()
         status = self.sending_status["LOADING"]
 
@@ -396,15 +406,15 @@ class NetworkManager:
             buf = b''
             while len(buf) < n:
                 readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
-                
+
                 if not readable:
-                    self.handle_cancel(len(buf))
-                    raise RuntimeError("Timeout - connection may be dead")
+                    raise socket.timeout
 
                 if self.ctrl_conn in readable:
                     self.handle_cancel(len(buf))
                     raise RuntimeError("Sender cancelled - Stop recieving")
 
+                # User click cancel button
                 if self._cancel_flag.is_set():
                     self.handle_cancel(len(buf))
                     raise RuntimeError("[!] Transfer cancelled by sender")
@@ -435,8 +445,7 @@ class NetworkManager:
                     readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
 
                     if not readable:
-                        self.handle_cancel(recieved)
-                        raise RuntimeError("Timeout - connection may be dead")
+                        raise socket.timeout
 
                     if self.ctrl_conn in readable:
                         self.handle_cancel(recieved)
@@ -473,7 +482,9 @@ class NetworkManager:
         
     def _recieve_folder(self, dest_folder):
         """Recieve folders"""
-        # self.tcp_recv.setblocking(False)
+        self.ctrl_conn.settimeout(None)
+        self.tcp_conn.settimeout(None)
+
         self.clear_cancel_signal()
         status = self.sending_status["LOADING"]
 
@@ -484,8 +495,7 @@ class NetworkManager:
                 readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
                 
                 if not readable:
-                    self.handle_cancel(len(buf))
-                    raise RuntimeError("Timeout - connection may be dead")
+                    raise socket.timeout
 
                 if self.ctrl_conn in readable:
                     self.handle_cancel(len(buf))
@@ -529,8 +539,7 @@ class NetworkManager:
                         readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
 
                         if not readable:
-                            self.handle_cancel(recieved_file)
-                            raise RuntimeError("Timeout - connection may be dead")
+                            raise socket.timeout
 
                         if self.ctrl_conn in readable:
                             self.handle_cancel(recieved_file)

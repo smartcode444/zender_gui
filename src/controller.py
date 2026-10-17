@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 from dataclasses import dataclass
 from src.model import NetworkManager
-from src.window import P2PApp
 
 @dataclass
 class FileInfo:
@@ -15,7 +14,7 @@ class FileInfo:
 class XenderController():
     def __init__(self, app, username):
         self.model = NetworkManager(self, username)
-        self.app: P2PApp = app
+        self.app = app
         self.username: str = username
         self.running: bool = True
         self.is_connected = threading.Event()
@@ -209,6 +208,10 @@ class XenderController():
 
             try:
                 self.model.receive_transfer(downloads_path)
+
+            except socket.timeout or :
+                continue
+            
             except Exception as e:
                 print(f"Error receiving transfer: {e}")
 
