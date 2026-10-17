@@ -22,8 +22,8 @@ class P2PApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
 
-        # Connected States
-        self.connected_user = ""
+        # # Connected States
+        # self.connected_user: str = ""
 
         # ----------------- SIDEBAR -----------------
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
@@ -87,12 +87,15 @@ class P2PApp(ctk.CTk):
         self.controller.end_connecting()
         self.show_view(MainSelectionView)
 
-    def set_connected_user(self, mode, username, dev_addr):
-        # self.connected_user = username
-        self.controller.connect(mode, dev_addr)   # <- Intiate connection
+    def set_connected_user(self, username):
         transfer_view = self.frames[ConnectedTransferView]
         transfer_view.update_header(username)
         self.show_view(ConnectedTransferView)
+
+    def connect(self, username, dev_addr):
+        self.controller.connect(dev_addr)   # <- Intiate connection
+        # self.controller.is_connected.wait() # Wait until the connection is established
+        # self.set_connected_user(username)  # Update the UI to show the connected user
 
     def refresh_scan_devices(self, devices):
         self.frames[ScanningView].display_devices(devices)
@@ -231,7 +234,7 @@ class ScanningView(ctk.CTkFrame):
             else:
                 item["button"].configure(state="disabled", fg_color="#0082FC")
                 # item["frame"].configure(text="Connecting...", fg_color="#4C02F8")
-        self.after(600, lambda: self.app.set_connected_user("scan", dev_name, dev_addr))
+        self.after(600, lambda: self.app.connect(dev_name, dev_addr))
         
 
 # -------------------------------------------------------------
@@ -274,11 +277,11 @@ class BroadcastingView(ctk.CTkFrame):
         lbl = ctk.CTkLabel(row, text=f"📥 Incoming: {requester_name} ({requester_addr}:{requester_port})", font=ctk.CTkFont(size=14))
         lbl.pack(side="left", padx=15, pady=12)
 
-        btn_accept = ctk.CTkButton(
-            row, text="Accept", width=100,
-            command=lambda: self.app.set_connected_user("broadcast", requester_name, requester_addr),
-        )
-        btn_accept.pack(side="right", padx=15, pady=12)
+        # btn_accept = ctk.CTkButton(
+        #     row, text="Accept", width=100,
+        #     command=lambda: self.app.set_connected_user("broadcast", requester_name, requester_addr),
+        # )
+        # btn_accept.pack(side="right", padx=15, pady=12)
 
 
 # -------------------------------------------------------------

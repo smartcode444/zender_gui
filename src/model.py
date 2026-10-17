@@ -173,17 +173,20 @@ class NetworkManager:
 
     def sc_connect(self, device_addr):
         print("Device address in sc_connect:", device_addr)
-        for connection in (self.tcp_send, self.tcp_recv, self.ctrl_conn):
-            connection.settimeout(self.CONNECTION_TIMEOUT)
-
+        # A failed multi-channel attempt can leave one or more sockets closed
+        # or already connected. Always start the next attempt with new sockets.
         try:
+            self.close_sockets()
+            self.init_scan_socks()
+            for connection in (self.tcp_send, self.tcp_recv, self.ctrl_conn):
+                connection.settimeout(self.CONNECTION_TIMEOUT)
+
             self.tcp_send.connect((device_addr, self.TCP_SEND_PORT))
             self.tcp_recv.connect((device_addr, self.TCP_RECV_PORT))
             self.ctrl_conn.connect((device_addr, self.CTRL_PORT))
 
         except socket.timeout:
             self.close_sockets()
-            self.init_scan_socks()
             raise socket.timeout
 
         except Exception as e:
