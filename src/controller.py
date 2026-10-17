@@ -23,22 +23,15 @@ class XenderController():
         self.is_broadcasting = threading.Event()
         self.is_connecting = threading.Event()
     
-        self.send_file_queue = queue.Queue()
-        self.send_folder_queue = queue.Queue()
+        self.transfer_queue = queue.Queue()
         self.scanned_devices = None
         self.scanners = None
 
-        self.send_file_worker_thread = threading.Thread(target=self._send_file_worker, daemon=True)
-        self.send_file_worker_thread.start()
+        self.transfer_worker_thread = threading.Thread(target=self._transfer_worker, daemon=True)
+        self.transfer_worker_thread.start()
 
-        self.send_folder_worker_thread = threading.Thread(target=self._send_folder_worker, daemon=True)
-        self.send_folder_worker_thread.start()
-
-        self.recieve_file_worker_thread = threading.Thread(target=self._recieve_file_worker, daemon=True)
-        self.recieve_file_worker_thread.start()
-
-        self.recieve_folder_worker_thread = threading.Thread(target=self._recieve_folder_worker, daemon=True)
-        self.recieve_folder_worker_thread.start()
+        self.receive_worker_thread = threading.Thread(target=self._receive_worker, daemon=True)
+        self.receive_worker_thread.start()
 
     # <- SCAN ->
 
@@ -90,6 +83,7 @@ class XenderController():
                 self.set_connection()
                 # self.app.after(0, self.app.set_connected_user(next(k for k, v in self.scanned_devices if v == addr))) # Update the UI to show the connected user
                 self.app.after(0, self.app.set_connected_user(dev_ip))
+                print("Scanner connected!")
                 break
             except socket.timeout:
                 continue
@@ -173,77 +167,50 @@ class XenderController():
     def check_connection(self):
         return self.is_connected.is_set()
 
-    def _send_file_worker(self):
+    def _transfer_worker(self):
         while self.running:
             if not self.is_connected.wait(timeout=1):
                 continue
 
             try:
-                file_path, progress_callback = self.send_file_queue.get(timeout=1)
+                transfer_kind, payload_path, progress_callback = self.transfer_queue.get(timeout=1)
             except queue.Empty:
                 continue
 
-            # Send the file over backend socket
             try:
-                file_path = Path(file_path)
-                name = os.path.basename(file_path)
-                self.model._send_file(name, file_path, progress_callback, rel_path=None)
+                payload_path = Path(payload_path)
+                if transfer_kind == "file":
+                    name = os.path.basename(payload_path)
+                    self.model._send_file(name, payload_path, progress_callback, rel_path=None)
+                elif transfer_kind == "folder":
+                    norm_folder_path = os.path.normpath(payload_path)
+                    self.model.send_folder(norm_folder_path, progress_callback)
+                else:
+                    raise ValueError(f"Unknown transfer kind: {transfer_kind}")
             except Exception as e:
-                print(f"Error sending file_path: {e}")
+                print(f"Error sending {transfer_kind}: {e}")
             finally:
-                self.send_file_queue.task_done()
+                self.transfer_queue.task_done()
 
     def send_file(self, path, progress_callback):
-        self.send_file_queue.put((path, progress_callback))
-
-    def _send_folder_worker(self):
-        while self.running:
-            if not self.is_connected.wait(timeout=1):
-                continue
-
-            try:
-                folder_path, progress_callback = self.send_folder_queue.get(timeout=1)
-            except queue.Empty:
-                continue
-
-            # Send the file over backend socket
-            try:
-                folder_path = Path(folder_path)
-                norm_folder_path = os.path.normpath(folder_path)
-                self.model.send_folder(norm_folder_path, progress_callback)
-            except Exception as e:
-                print(f"Error sending folder_path: {e}")
-            finally:
-                self.send_folder_queue.task_done()
+        self.transfer_queue.put(("file", path, progress_callback))
 
     def send_folder(self, path, progress_callback):
-        self.set_connection()
-        self.send_folder_queue.put((path, progress_callback))
+        self.transfer_queue.put(("folder", path, progress_callback))
 
     def register_incoming_transfer(self, item_name):
         return self.app.register_incoming_transfer(item_name)
 
-    def _recieve_file_worker(self):
+    def _receive_worker(self):
         downloads_path: Path = Path.home() / "Downloads"
         while self.running:
             if not self.is_connected.wait(timeout=1):
                 continue
 
             try:
-                self.model.recieve_file(downloads_path)
+                self.model.receive_transfer(downloads_path)
             except Exception as e:
-                print(f"Error sending folder_path: {e}")
-
-    def _recieve_folder_worker(self):
-        downloads_path: Path = Path.home() / "Downloads"
-        while self.running:
-            if not self.is_connected.wait(timeout=1):
-                continue
-
-            try:
-                self.model.recieve_folder(downloads_path)
-            except Exception as e:
-                print(f"Error sending folder_path: {e}")
+                print(f"Error receiving transfer: {e}")
 
     def shut_down(self):
         print("Shutting down...")

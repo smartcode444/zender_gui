@@ -9,9 +9,8 @@ class NetworkManager:
     def __init__(self, controller, username: str):
         self.controller        = controller
 
-        self.UDP_PORT          = 7018
-        self.TCP_SEND_PORT     = 5017
-        self.TCP_RECV_PORT     = 5018
+        self.UDP_PORT          = 5017
+        self.TCP_PORT          = 5018
         self.CTRL_PORT         = 5019
         self.CONNECTION_TIMEOUT = 10.0
         self.INTERFACES        = get_all_broadcast_addresses()
@@ -22,16 +21,17 @@ class NetworkManager:
 
         self.name              = username
 
-        self.recv_filename     = None
-        self.recv_foldername   = None
+        # self.tcp_conn_server   = None
+        # self.tcp_recv_server   = None 
 
-        self.tcp_send_server   = None
-        self.tcp_recv_server   = None 
-        self.tcp_send          = None
-        self.tcp_recv          = None
-        # self.ctrl_socket       = None # accepted from broadcaster side
-        self.ctrl_conn         = None # connected from scanner side
-        # self._cancel_flag      = asyncio.Event()
+        # self.tcp_conn          = None
+        # self.tcp_recv          = None
+
+        self.tcp_server        = None
+        self.ctrl_server       = None
+        self.tcp_conn          = None 
+        self.ctrl_conn         = None
+
         self._cancel_flag      = threading.Event()
 
         self.sending_status    = {"SUCCESS": 0, "LOADING": 1, "ERROR": 2}
@@ -49,12 +49,10 @@ class NetworkManager:
     def close_sockets(self):
         """Close all sockets."""
         for name in (
-            "tcp_send",
-            "tcp_recv",
+            "tcp_conn"
+            "tcp_server",
             "ctrl_conn",
             "ctrl_server",
-            "tcp_send_server",
-            "tcp_recv_server",
         ):
             sock = getattr(self, name, None)
             if sock is not None:
@@ -69,15 +67,10 @@ class NetworkManager:
         self.ctrl_server.bind(('', self.CTRL_PORT))
         self.ctrl_server.listen(1)
 
-        self.tcp_send_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp_send_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
-        self.tcp_send_server.bind(('', self.TCP_SEND_PORT))
-        self.tcp_send_server.listen(1)
-
-        self.tcp_recv_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp_recv_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
-        self.tcp_recv_server.bind(('', self.TCP_RECV_PORT))
-        self.tcp_recv_server.listen(1)
+        self.tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
+        self.tcp_server.bind(('', self.TCP_conn_PORT))
+        self.tcp_server.listen(1)
 
 
     def broadcast(self, message) -> str:
@@ -111,16 +104,14 @@ class NetworkManager:
     def bd_connect(self):
         """Accept all three channels for one incoming connection attempt."""
         listeners = (
-            self.tcp_send_server,
-            self.tcp_recv_server,
+            self.tcp_server,
             self.ctrl_server,
         )
         for listener in listeners:
             listener.settimeout(self.CONNECTION_TIMEOUT)
 
         try:
-            self.tcp_send, _ = self.tcp_send_server.accept()
-            self.tcp_recv, _ = self.tcp_recv_server.accept()
+            self.tcp_conn, _ = self.tcp_server.accept()
             self.ctrl_conn, _ = self.ctrl_server.accept()
 
         except socket.timeout:
@@ -139,10 +130,9 @@ class NetworkManager:
     def init_scan_socks(self):
         """Intialize sockets for scanning."""
         self.selected_mode = "scan"
-        self.tcp_send  = socket.socket(socket.AF_INET, socket.SOCK_STREAM)        
-        self.tcp_recv  = socket.socket(socket.AF_INET, socket.SOCK_STREAM)       
+        self.tcp_conn  = socket.socket(socket.AF_INET, socket.SOCK_STREAM)        
         self.ctrl_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
-        
+
     
     def scan(self, msg, devices) -> tuple:
         """Scan for devices on the network."""
@@ -178,11 +168,10 @@ class NetworkManager:
         try:
             self.close_sockets()
             self.init_scan_socks()
-            for connection in (self.tcp_send, self.tcp_recv, self.ctrl_conn):
+            for connection in (self.tcp_conn, self.ctrl_conn):
                 connection.settimeout(self.CONNECTION_TIMEOUT)
 
-            self.tcp_send.connect((device_addr, self.TCP_SEND_PORT))
-            self.tcp_recv.connect((device_addr, self.TCP_RECV_PORT))
+            self.tcp_conn.connect((device_addr, self.TCP_PORT))
             self.ctrl_conn.connect((device_addr, self.CTRL_PORT))
 
         except socket.timeout:
@@ -205,7 +194,7 @@ class NetworkManager:
     def _send_end(self):
         """Send END command."""        # Send a command byte: 0x02 means END
         try:
-            self.tcp_send.send(b'\x02')
+            self.tcp_conn.send(b'\x02')
         except OSError:
             pass
 
@@ -244,7 +233,7 @@ class NetworkManager:
                 gap = sender_sent - reciever_recieved
                 discarded = 0
                 while discarded < gap:
-                    chunk = self.tcp_recv.recv(min(65536, gap - discarded))
+                    chunk = self.tcp_conn.recv(min(65536, gap - discarded))
                     if not chunk:
                         break
                     discarded += len(chunk)
@@ -282,8 +271,10 @@ class NetworkManager:
         header = len(namebytes).to_bytes(4, 'big') + namebytes + filesize.to_bytes(8, 'big')
 
         try:
+            self.tcp_conn.sendall(b'F')
+
             # send header (blocking)
-            self.tcp_send.sendall(header)
+            self.tcp_conn.sendall(header)
 
             sent = 0
             with open(path, 'rb') as f:
@@ -310,7 +301,7 @@ class NetworkManager:
                         break
 
                     try:
-                        self.tcp_send.sendall(chunk)
+                        self.tcp_conn.sendall(chunk)
                     except (OSError, BlockingIOError) as e:
                         print("Network error - connection lost")
                         status = self.sending_status["ERROR"]
@@ -351,8 +342,9 @@ class NetworkManager:
                 files_list.append((full_path, rel_path))
                 folder_size += os.path.getsize(full_path)
 
-        # Send folder size to reciever
-        self.tcp_send.send(folder_size.to_bytes(8, 'big'))
+        # Mark this transfer as a folder, then send folder size to receiver
+        self.tcp_conn.sendall(b'D')
+        self.tcp_conn.sendall(folder_size.to_bytes(8, 'big'))
 
         # Informal progress: iterate through each file and send as _send_file
         total_sent = 0
@@ -399,7 +391,7 @@ class NetworkManager:
             """Await exactly n bytes"""
             buf = b''
             while len(buf) < n:
-                readable, _, _ = select.select([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+                readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
                 
                 if not readable:
                     self.handle_cancel(len(buf))
@@ -413,8 +405,8 @@ class NetworkManager:
                     self.handle_cancel(len(buf))
                     raise RuntimeError("[!] Transfer cancelled by sender")
 
-                if self.tcp_recv in readable:
-                    chunk = self.tcp_recv.recv(n - len(buf))
+                if self.tcp_conn in readable:
+                    chunk = self.tcp_conn.recv(n - len(buf))
                     if not chunk:
                         raise ConnectionError("[!] Connection closed by sender")
                     buf += chunk
@@ -435,7 +427,7 @@ class NetworkManager:
             with open(filepath, "wb") as f:
                 while recieved < filesize:
                     # Watch Both sockets simultaneously 
-                    readable, _, _ = select.select([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+                    readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
 
                     if not readable:
                         self.handle_cancel(recieved)
@@ -449,8 +441,8 @@ class NetworkManager:
                         self.handle_cancel(recieved)
                         raise RuntimeError("[!] Transfer cancelled by sender")
 
-                    if self.tcp_recv in readable:
-                        chunk = self.tcp_recv.recv(
+                    if self.tcp_conn in readable:
+                        chunk = self.tcp_conn.recv(
                             min(65536, filesize - recieved)
                         )
                         if not chunk:
@@ -482,7 +474,7 @@ class NetworkManager:
             """Await exactly n bytes"""
             buf = b''
             while len(buf) < n:
-                readable, _, _ = select.select([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+                readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
                 
                 if not readable:
                     self.handle_cancel(len(buf))
@@ -496,8 +488,8 @@ class NetworkManager:
                     self.handle_cancel(len(buf))
                     raise RuntimeError("[!] Transfer cancelled by sender")
 
-                if self.tcp_recv in readable:
-                    chunk = self.tcp_recv.recv(n - len(buf))
+                if self.tcp_conn in readable:
+                    chunk = self.tcp_conn.recv(n - len(buf))
                     if not chunk:
                         raise ConnectionError("[!] Connection closed by sender")
                     buf += chunk
@@ -526,7 +518,7 @@ class NetworkManager:
 
                     while recieved_file < filesize:
                         # Watch Both sockets simultaneously 
-                        readable, _, _ = select.select([self.tcp_recv, self.ctrl_conn], [], [], 5.0)
+                        readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
 
                         if not readable:
                             self.handle_cancel(recieved_file)
@@ -540,8 +532,8 @@ class NetworkManager:
                             self.handle_cancel(recieved_file)
                             raise RuntimeError("[!] Transfer cancelled by sender")
 
-                        if self.tcp_recv in readable:
-                            chunk = self.tcp_recv.recv(
+                        if self.tcp_conn in readable:
+                            chunk = self.tcp_conn.recv(
                                 min(65536, filesize - recieved_file)
                             )
                             if not chunk:
@@ -568,6 +560,40 @@ class NetworkManager:
     
     def recieve_file(self, dest_folder):
         return self._recieve_file(dest_folder)
+
+    def receive_transfer(self, dest_folder):
+        """Read the next transfer type and dispatch to the matching receiver."""
+        def recv_exact(n: int) -> bytes:
+            buf = b''
+            while len(buf) < n:
+                readable, _, _ = select.select([self.tcp_conn, self.ctrl_conn], [], [], 5.0)
+
+                if not readable:
+                    self.handle_cancel(len(buf))
+                    raise RuntimeError("Timeout - connection may be dead")
+
+                if self.ctrl_conn in readable:
+                    self.handle_cancel(len(buf))
+                    raise RuntimeError("Sender cancelled - Stop recieving")
+
+                if self._cancel_flag.is_set():
+                    self.handle_cancel(len(buf))
+                    raise RuntimeError("[!] Transfer cancelled by sender")
+
+                if self.tcp_conn in readable:
+                    chunk = self.tcp_conn.recv(n - len(buf))
+                    if not chunk:
+                        raise ConnectionError("[!] Connection closed by sender")
+                    buf += chunk
+            return buf
+
+        transfer_kind = recv_exact(1)
+        if transfer_kind == b'F':
+            return self._recieve_file(dest_folder)
+        if transfer_kind == b'D':
+            return self._recieve_folder(dest_folder)
+
+        raise RuntimeError(f"Unknown transfer type: {transfer_kind!r}")
 
 def get_all_broadcast_addresses():
     """
