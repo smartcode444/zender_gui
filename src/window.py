@@ -117,7 +117,15 @@ class P2PApp(ctk.CTk):
     def send_folder(self, path, progress_callback):
         self.controller.send_folder(path, progress_callback)
 
-    def register_incoming_transfer(self, item_name: str):
+    def cancel_sender_transfer(self, sent_so_far: int = 0):
+        if hasattr(self.controller, "cancel_sender_transfer"):
+            self.controller.cancel_sender_transfer(sent_so_far)
+
+    def cancel_receiver_transfer(self, received_so_far: int = 0):
+        if hasattr(self.controller, "cancel_receiver_transfer"):
+            self.controller.cancel_receiver_transfer(received_so_far)
+
+    def register_incoming_transfer(self, item_name: str, total_bytes: int | None = None):
         """Create the incoming-transfer row without blocking the transfer thread."""
         callback_holder = {}
         pending_updates = []
@@ -132,7 +140,7 @@ class P2PApp(ctk.CTk):
 
         def _create_ui():
             transfer_view = self.frames[ConnectedTransferView]
-            callback_holder["callback"] = transfer_view.start_incoming_transfer(item_name)
+            callback_holder["callback"] = transfer_view.start_incoming_transfer(item_name, total_bytes)
             _flush_pending()
 
         def progress_callback(value: float, status: int):
@@ -348,9 +356,16 @@ class ConnectedTransferView(ctk.CTkFrame):
 
         for path in filepaths:
             filename = os.path.basename(path)
+            total_bytes = os.path.getsize(path)
             # 1. Create the UI row and receive an update callback
-            progress_callback = self.add_transfer_item(self.send_list_frame, filename, 0.0)
-            
+            progress_callback = self.add_transfer_item(
+                self.send_list_frame,
+                filename,
+                0.0,
+                total_bytes=total_bytes,
+                cancel_callback=lambda current_bytes=0: self.app.cancel_sender_transfer(current_bytes),
+            )
+
             # 2. Pass both the path and the callback to your backend
             if hasattr(self.app, "send_file"):
                 self.app.send_file(path, progress_callback)
@@ -361,21 +376,24 @@ class ConnectedTransferView(ctk.CTkFrame):
             return
 
         foldername = os.path.basename(folderpath)
-        progress_callback = self.add_transfer_item(self.send_list_frame, f"Folder: {foldername}", 0.0)
-        
+        total_bytes = 0
+        for root, _, files in os.walk(folderpath):
+            for file in files:
+                total_bytes += os.path.getsize(os.path.join(root, file))
+
+        progress_callback = self.add_transfer_item(
+            self.send_list_frame,
+            f"Folder: {foldername}",
+            0.0,
+            total_bytes=total_bytes,
+            cancel_callback=lambda current_bytes=0: self.app.cancel_sender_transfer(current_bytes),
+        )
+
         if hasattr(self.app, "send_folder"):
             self.app.send_folder(folderpath, progress_callback)
 
-    # def action_recv_folder(self, folder_name):
-    #     # downloads_path = Path.home() / "Downloads"
-    #     progress_callback = self.add_transfer_item(self.recv_list_frame, f"Folder: {folder_name}", 0.0)
-    #     return progress_callback
 
-    # def action_recv_file(self, file_name):
-    #     progress_callback = self.add_transfer_item(self.recv_list_frame, f"File: {file_name}", 0.0)
-    #     return progress_callback
-
-    def add_transfer_item(self, parent_frame, item_name: str, progress_val: float = 0.0):
+    def add_transfer_item(self, parent_frame, item_name: str, progress_val: float = 0.0, total_bytes: int | None = None, cancel_callback=None):
         """Builds a transfer row and returns a thread-safe update function."""
         row = ctk.CTkFrame(parent_frame)
         row.pack(fill="x", pady=5, padx=5)
@@ -393,18 +411,33 @@ class ConnectedTransferView(ctk.CTkFrame):
         status_lbl = ctk.CTkLabel(row, text="", width=30, font=ctk.CTkFont(size=15, weight="bold"))
         status_lbl.pack(side="left", padx=5)
 
+        state = {
+            "status": None,
+            "frame_idx": 0,
+            "is_spinning": False,
+            "total_bytes": total_bytes,
+            "bytes_transferred": 0,
+        }
+
+        def _handle_cancel():
+            if callable(cancel_callback):
+                try:
+                    cancel_callback(state["bytes_transferred"])
+                except Exception as exc:
+                    print(f"[!] Cancel callback failed: {exc}")
+            btn_cancel.configure(text="Cancelling...", state="disabled", fg_color="#552222")
+
         btn_cancel = ctk.CTkButton(
             row,
             text="Cancel",
             width=70,
             fg_color="#a83232",
             hover_color="#7a2424",
-            command=lambda: row.destroy(),   # Hook up backend abort signal here
+            command=_handle_cancel,
         )
         btn_cancel.pack(side="right", padx=10, pady=10)
 
         spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        state = {"status": None, "frame_idx": 0, "is_spinning": False}
 
         def _spin():
             if not status_lbl.winfo_exists():
@@ -421,12 +454,15 @@ class ConnectedTransferView(ctk.CTkFrame):
             if not (progress.winfo_exists() and pct_lbl.winfo_exists() and status_lbl.winfo_exists()):
                 return
 
-            # Update progress bar and percentage text
+            if state["total_bytes"] is not None and state["total_bytes"] > 0:
+                state["bytes_transferred"] = int(max(0, min(state["total_bytes"], value * state["total_bytes"])))
+            elif value > 1.0:
+                state["bytes_transferred"] = int(value)
+
             clamped_val = max(0.0, min(1.0, value))
             progress.set(clamped_val)
             pct_lbl.configure(text=f"{int(clamped_val * 100)}%")
 
-            # Update status and icon state
             state["status"] = status
 
             if status == 0:  # Success
@@ -450,13 +486,19 @@ class ConnectedTransferView(ctk.CTkFrame):
 
         return update_progress
 
-    def start_incoming_transfer(self, item_name: str):
+    def start_incoming_transfer(self, item_name: str, total_bytes: int | None = None):
         """Creates a row in the Receiving tab and returns the progress callback."""
         # Auto-switch to the Receiving tab so the user sees the incoming file
         self.tabview.set("Receiving")
-        
+
         # Build the row inside recv_list_frame and return the callback
-        return self.add_transfer_item(self.recv_list_frame, item_name, 0.0)
+        return self.add_transfer_item(
+            self.recv_list_frame,
+            item_name,
+            0.0,
+            total_bytes=total_bytes,
+            cancel_callback=lambda current_bytes=0: self.app.cancel_receiver_transfer(current_bytes),
+        )
 
 
 if __name__ == "__main__":

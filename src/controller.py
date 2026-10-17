@@ -197,8 +197,8 @@ class XenderController():
     def send_folder(self, path, progress_callback):
         self.transfer_queue.put(("folder", path, progress_callback))
 
-    def register_incoming_transfer(self, item_name):
-        return self.app.register_incoming_transfer(item_name)
+    def register_incoming_transfer(self, item_name, total_bytes=None):
+        return self.app.register_incoming_transfer(item_name, total_bytes)
 
     def _receive_worker(self):
         downloads_path: Path = Path.home() / "Downloads"
@@ -209,11 +209,17 @@ class XenderController():
             try:
                 self.model.receive_transfer(downloads_path)
 
-            except socket.timeout or :
+            except socket.timeout:
                 continue
             
             except Exception as e:
                 print(f"Error receiving transfer: {e}")
+
+    def cancel_sender_transfer(self, sent_so_far: int = 0):
+        self.model.sender_request_cancel(sent_so_far)
+
+    def cancel_receiver_transfer(self, received_so_far: int = 0):
+        self.model.receiver_request_cancel(received_so_far)
 
     def shut_down(self):
         print("Shutting down...")
