@@ -4,6 +4,14 @@ import threading
 import struct
 import psutil
 import os
+from enum import IntEnum
+
+
+class TransferStatus(IntEnum):
+    SUCCESS = 0
+    LOADING = 1
+    ERROR = 2
+    CANCELLED = 3
 
 class NetworkManager:
     def __init__(self, controller, username: str):
@@ -35,9 +43,6 @@ class NetworkManager:
         self._cancel_receiving_flag    = threading.Event()
         self._cancel_sending_flag      = threading.Event()
 
-        self.sending_status    = {"SUCCESS": 0, "LOADING": 1, "ERROR": 2}
-        self.recieving_status  = {"SUCCESS": 0, "LOADING": 1, "ERROR": 2}
- 
         self.selected_mode     = None
 
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -54,6 +59,7 @@ class NetworkManager:
             "tcp_server",
             "ctrl_conn",
             "ctrl_server",
+            "udp_socket",
         ):
             sock = getattr(self, name, None)
             if sock is not None:
@@ -61,7 +67,7 @@ class NetworkManager:
                 setattr(self, name, None)
 
     def init_bd_socks(self):
-        """Intialize sockets for broadcasting."""
+        """Intialize tcp sockets for broadcaster."""
         self.selected_mode = "broadcast"
 
         self.ctrl_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
@@ -74,6 +80,13 @@ class NetworkManager:
         self.tcp_server.bind(('', self.TCP_PORT))
         self.tcp_server.listen(1)
 
+    def close_bd_socks(self):
+        """Close broadcast sockets."""
+        for name in ("tcp_server", "ctrl_server"):
+            sock = getattr(self, name, None)
+            if sock is not None:
+                sock.close()
+                setattr(self, name, None)
 
     def broadcast(self, message) -> str:
         """Send discovery packet on every interface, and wait for a response"""
@@ -85,6 +98,8 @@ class NetworkManager:
 
         try:
             data, addr = self.udp_socket.recvfrom(1024)
+            if not data:
+                return None, None
             # print(data)
         except socket.timeout:
             raise
@@ -130,18 +145,25 @@ class NetworkManager:
     
 
     def init_scan_socks(self):
-        """Intialize sockets for scanning."""
+        """Intialize tcp sockets for scanner."""
         self.selected_mode = "scan"
         self.tcp_conn  = socket.socket(socket.AF_INET, socket.SOCK_STREAM)        
         self.ctrl_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
 
+    def close_scan_socks(self):
+        """Close scanning sockets."""
+        for name in ("tcp_conn", "ctrl_conn"):
+            sock = getattr(self, name, None)
+            if sock is not None:
+                sock.close()
+                setattr(self, name, None)
     
     def scan(self, msg, devices) -> tuple:
         """Scan for devices on the network."""
         try:
             data, address = self.udp_socket.recvfrom(1024)
             if not data:
-                print("Recived nothing!!!")
+                return None, None
             # print(f"Data: {data}") 
         except socket.timeout:
             raise socket.timeout
@@ -149,10 +171,17 @@ class NetworkManager:
         sender_ip = address[0]
         if sender_ip in self.own_ips:
             return None, None
-        
+
         username_len  = data[0]
-        client_name   = data[1:1+username_len].decode('utf-8')
-        client_msg    = data[1+username_len:].decode('utf-8')
+        if username_len > len(data) - 1:
+            return None, None
+        
+        try:
+            client_name   = data[1:1+username_len].decode('utf-8')
+            client_msg    = data[1+username_len:].decode('utf-8')
+        except UnicodeDecodeError as e:
+            return None, None
+
         if client_msg == "XENDER_DISCOVERY_REQUEST" and client_name not in devices:
             try:
                 self.udp_socket.sendto(msg, (address))
@@ -199,25 +228,20 @@ class NetworkManager:
 
     # <- SEND ->
 
-    def _send_end(self):
-        """Send END command."""        # Send a command byte: 0x02 means END
-        try:
-            self.tcp_conn.send(b'\x02')
-        except OSError:
-            pass
-
     # Sender side - on cancel, report exactly how many bytes it pushed into the socket
     def sender_notify_cancel(self, local_sent_so_far: int):
         """Send a CANCEL byte (0x03) and the amount of bytes pushed to the socket
         to the peer over the control channel.
         """
+        self.clear_cancel_send_flag()
         try:
             # [Ox03][8B bytes_sent_into_socket]
-            self.ctrl_conn.send(b'\x03' + local_sent_so_far.to_bytes(8, 'big'))
+            self.ctrl_conn.sendall(b'\x03' + local_sent_so_far.to_bytes(8, 'big'))
         except OSError:
             pass
 
     def sender_handle_cancel(self, local_sent_so_far: int):
+        self.clear_cancel_send_flag()
         cmd = self.ctrl_conn.recv(1)
         if cmd == b'\x03':
             count_bytes = b''
@@ -240,6 +264,7 @@ class NetworkManager:
 
     def receiver_notify_cancel(self, local_received_so_far: int):
         """Send a CANCEL packet to the sender with how many bytes were received."""
+        self.clear_cancel_recv_flag()
         if self.ctrl_conn is None:
             return
 
@@ -252,6 +277,7 @@ class NetworkManager:
     # Receiver side - Receives cancel signal 
     def receiver_handle_cancel(self, local_receiver_received, timeout: float = 1.0):
         """Drain exactly remaining bytes from the data socket and discard"""
+        self.clear_cancel_recv_flag()
         try:
             self.ctrl_conn.settimeout(timeout) # Handle cancel process should be done within a second
         except OSError:
@@ -299,7 +325,7 @@ class NetworkManager:
         Arguments:
           - name: base filename shown to receiver
           - path: local filesystem path to read
-          - progress_callback(progress: float, status: int)
+          - progress_callback(progress: float, status: TransferStatus)
           - rel_path: optional relative path to send instead of `name` (for folders)
 
         The header layout matches the receiver expected layout:
@@ -317,7 +343,7 @@ class NetworkManager:
         header_name = rel_path if rel_path is not None else name
 
         self.clear_cancel_send_flag()
-        status = self.sending_status["LOADING"]
+        status = TransferStatus.LOADING
 
         filesize = os.path.getsize(path)
         namebytes = header_name.encode('utf-8')
@@ -338,6 +364,7 @@ class NetworkManager:
                     # If receiver cancel transfer, handle the cancel signal
                     if readable:
                         self.sender_handle_cancel(sent)
+                        progress_callback(sent / max(1, filesize), status)
                         return
 
                     if self._cancel_sending_flag.is_set():
@@ -347,7 +374,7 @@ class NetworkManager:
                             return
                         except Exception:
                             pass
-                        status = self.sending_status["ERROR"]
+                        status = TransferStatus.ERROR
                         progress_callback(sent / max(1, filesize), status)
                         return
 
@@ -360,7 +387,7 @@ class NetworkManager:
                         self.tcp_conn.sendall(chunk)
                     except (OSError, BlockingIOError) as e:
                         print("Network error - connection lost")
-                        status = self.sending_status["ERROR"]
+                        status = TransferStatus.ERROR
                         progress_callback(sent / max(1, filesize), status)
                         # notify peer if possible then re-raise
                         try:
@@ -371,11 +398,11 @@ class NetworkManager:
                         raise RuntimeError(f"[!] Error while sending '{name}': {e}")
 
                     sent += len(chunk)
-                    if sent - last_reported >= 65536 or sent == filesize:
-                        progress_callback(sent / filesize, status)
+                    if sent - last_reported >= 1048576 or sent == filesize:
+                        progress_callback(sent / max(1, filesize), status)
                         last_reported = sent
 
-            status = self.sending_status["SUCCESS"]
+            status = TransferStatus.SUCCESS
             progress_callback(1.0, status)
 
         finally:
@@ -449,7 +476,7 @@ class NetworkManager:
         self.tcp_conn.settimeout(None)
 
         self.clear_cancel_recv_flag()
-        status = self.sending_status["LOADING"]
+        status = TransferStatus.LOADING
 
         def recv_exact(n: int) -> bytes:
             """Await exactly n bytes"""
@@ -512,15 +539,15 @@ class NetworkManager:
                             raise ConnectionError("\n[!] Connection lost mid-transfer")
                         f.write(chunk)
                         received += len(chunk)
-                        if received - last_reported >= 65536 or received == filesize:
-                            progress_callback(received/filesize, status)
+                        if received - last_reported >= 1048576 or received == filesize:
+                            progress_callback(received / max(1, filesize), status)
                             last_reported = received
 
-            status = self.sending_status["SUCCESS"]
-            progress_callback(received/filesize, status)
+            status = TransferStatus.SUCCESS
+            progress_callback(received / max(1, filesize), status)
 
         except (ConnectionError, BlockingIOError, RuntimeError) as e:
-            status = self.recieving_status.get("ERROR", 2)
+            status = TransferStatus.ERROR
             # best-effort progress update
             try:
                 progress_callback(received / max(1, filesize), status)
@@ -535,7 +562,7 @@ class NetworkManager:
         self.tcp_conn.settimeout(None)
 
         self.clear_cancel_recv_flag()
-        status = self.sending_status["LOADING"]
+        status = TransferStatus.LOADING
 
         def recv_exact(n: int) -> bytes:
             """Await exactly n bytes"""
@@ -605,16 +632,16 @@ class NetworkManager:
                                 raise ConnectionError("\n[!] Connection lost mid-transfer")
                             f.write(chunk)
                             received_file += len(chunk)
-                            if received_file - last_reported >= 65536 or received_file == filesize:
-                                progress_callback(received_folder/folder_size, status)
-                                last_reported = received_file
+                            received_folder += filesize
+                            if received_file - last_reported >= 1048576 or received_file == filesize:
+                                progress_callback(received_folder / max(1, folder_size), status)
+                                last_reported = received_file          
 
-
-                status = self.sending_status["SUCCESS"]
-                progress_callback(received_folder/folder_size, status)
+                status = TransferStatus.SUCCESS
+                progress_callback(received_folder / max(1, folder_size), status)
 
             except (ConnectionError, BlockingIOError, RuntimeError) as e:
-                status = self.recieving_status.get("ERROR", 2)
+                status = TransferStatus.ERROR
                 # best-effort progress update
                 try:
                     progress_callback(received_folder / max(1, folder_size), status)

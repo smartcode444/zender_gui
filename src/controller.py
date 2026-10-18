@@ -21,7 +21,8 @@ class XenderController():
         self.is_scanning = threading.Event()
         self.is_broadcasting = threading.Event()
         self.is_connecting = threading.Event()
-    
+        self.transfer_lock = threading.Lock()
+
         self.transfer_queue = queue.Queue()
         self.scanned_devices = None
         self.scanners = None
@@ -62,6 +63,7 @@ class XenderController():
                 self.app.after(0, self.app.refresh_scan_devices, self.scanned_devices)
 
     def run_scan(self):
+        self.model.close_scan_socks()  # Close any existing scan sockets before initializing new ones
         self.model.init_scan_socks()
         
         self.is_scanning.set()
@@ -70,6 +72,7 @@ class XenderController():
 
     def end_scan(self):
         self.is_scanning.clear()
+        self.model.close_scan_socks()
         print("Scanning stoppped")
 
     def scan_connect(self, addr):
@@ -110,6 +113,7 @@ class XenderController():
                 self.app.after(0, self.app.refresh_scanners, self.scanners)
 
     def run_broadcast(self):
+        self.model.close_bd_socks()  # Close any existing broadcast sockets before initializing new ones
         self.model.init_bd_socks()
 
         self.is_broadcasting.set()
@@ -120,7 +124,8 @@ class XenderController():
         bd_conn_thread = threading.Thread(target=self.broadcast_connect, daemon=True)
         bd_conn_thread.start()
 
-    def end_broadcast(self):
+    def end_broadcast(self): 
+        self.model.close_bd_socks()
         self.is_broadcasting.clear()
         print("Broadcasting stopped")
 
@@ -132,7 +137,7 @@ class XenderController():
                 self.end_connecting()
                 self.set_connection()
                 print("Broadcaster connected!")
-                self.app.after(0, self.app.set_connected_user(self.scanners[0])) # Update the UI to show the connected user
+                self.app.after(0, self.app.set_connected_user, self.scanners[0]) # Update the UI to show the connected user
                 break
 
             except socket.timeout:
@@ -143,12 +148,14 @@ class XenderController():
 
     def connect(self, dev_addr=None):
         self.set_connecting()
-        # if mode == "scan":
+        
+        if dev_addr is None:
+            print("No device address provided for connection.")
+            self.end_connecting()
+            return
+        
         sc_conn_thread = threading.Thread(target=self.scan_connect, args=(dev_addr, ))
         sc_conn_thread.start()
-        # elif mode == "broadcast":
-        #     bd_conn_thread = threading.Thread(target=self.broadcast_connect)
-        #     bd_conn_thread.start()
 
     def set_connecting(self):
         self.is_connecting.set()
@@ -176,20 +183,21 @@ class XenderController():
             except queue.Empty:
                 continue
 
-            try:
-                payload_path = Path(payload_path)
-                if transfer_kind == "file":
-                    name = os.path.basename(payload_path)
-                    self.model._send_file(name, payload_path, progress_callback, rel_path=None)
-                elif transfer_kind == "folder":
-                    norm_folder_path = os.path.normpath(payload_path)
-                    self.model.send_folder(norm_folder_path, progress_callback)
-                else:
-                    raise ValueError(f"Unknown transfer kind: {transfer_kind}")
-            except Exception as e:
-                print(f"Error sending {transfer_kind}: {e}")
-            finally:
-                self.transfer_queue.task_done()
+            with self.transfer_lock:
+                try:
+                    payload_path = Path(payload_path)
+                    if transfer_kind == "file":
+                        name = os.path.basename(payload_path)
+                        self.model._send_file(name, payload_path, progress_callback, rel_path=None)
+                    elif transfer_kind == "folder":
+                        norm_folder_path = os.path.normpath(payload_path)
+                        self.model.send_folder(norm_folder_path, progress_callback)
+                    else:
+                        raise ValueError(f"Unknown transfer kind: {transfer_kind}")
+                except Exception as e:
+                    print(f"Error sending {transfer_kind}: {e}")
+                finally:
+                    self.transfer_queue.task_done()
 
     def send_file(self, path, progress_callback):
         self.transfer_queue.put(("file", path, progress_callback))
@@ -206,14 +214,15 @@ class XenderController():
             if not self.is_connected.wait(timeout=1):
                 continue
 
-            try:
-                self.model.receive_transfer(downloads_path)
+            with self.transfer_lock:
+                try:
+                    self.model.receive_transfer(downloads_path)
 
-            except socket.timeout:
-                continue
-            
-            except Exception as e:
-                print(f"Error receiving transfer: {e}")
+                except socket.timeout:
+                    continue
+                
+                except Exception as e:
+                    print(f"Error receiving transfer: {e}")
 
     def cancel_sender_transfer(self, sent_so_far: int = 0):
         self.model.sender_request_cancel(sent_so_far)

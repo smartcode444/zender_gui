@@ -1,10 +1,8 @@
 import customtkinter as ctk
 import os
 from tkinter import filedialog
-from pathlib import Path
-import threading
-# from controller import XenderController
 from src.controller import XenderController
+from src.model import TransferStatus
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -17,7 +15,7 @@ class P2PApp(ctk.CTk):
         self.title("ZENDER - P2P File Transfer")
         self.geometry("950x620")
         self.minsize(850, 500)
-
+        
         # Layout Configuration
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
@@ -143,7 +141,7 @@ class P2PApp(ctk.CTk):
             callback_holder["callback"] = transfer_view.start_incoming_transfer(item_name, total_bytes)
             _flush_pending()
 
-        def progress_callback(value: float, status: int):
+        def progress_callback(value: float, status: TransferStatus):
             callback = callback_holder.get("callback")
             if callback is None:
                 pending_updates.append((value, status))
@@ -442,7 +440,7 @@ class ConnectedTransferView(ctk.CTkFrame):
         def _spin():
             if not status_lbl.winfo_exists():
                 return
-            if state["status"] == 1:
+            if state["status"] == TransferStatus.LOADING:
                 state["frame_idx"] = (state["frame_idx"] + 1) % len(spinner_frames)
                 status_lbl.configure(text=spinner_frames[state["frame_idx"]], text_color="#3498db")
                 self.after(100, _spin)
@@ -450,7 +448,7 @@ class ConnectedTransferView(ctk.CTkFrame):
                 state["is_spinning"] = False
 
         # Internal helper to update UI on Tkinter's main thread
-        def _apply_update(value: float, status: int):
+        def _apply_update(value: float, status: TransferStatus):
             if not (progress.winfo_exists() and pct_lbl.winfo_exists() and status_lbl.winfo_exists()):
                 return
 
@@ -465,23 +463,27 @@ class ConnectedTransferView(ctk.CTkFrame):
 
             state["status"] = status
 
-            if status == 0:  # Success
+            if status == TransferStatus.SUCCESS:
                 status_lbl.configure(text="✔", text_color="#2ecc71")
                 progress.set(1.0)
                 pct_lbl.configure(text="100%")
                 btn_cancel.configure(text="Done", state="disabled", fg_color="#2b2b2b")
 
-            elif status == 1:  # Loading / In-Progress
+            elif status == TransferStatus.LOADING:
                 if not state["is_spinning"]:
                     state["is_spinning"] = True
                     _spin()
 
-            elif status in (2, 3):  # Error / Failed
+            elif status in (TransferStatus.ERROR, TransferStatus.CANCELLED):
                 status_lbl.configure(text="✖", text_color="#e74c3c")
-                btn_cancel.configure(text="Failed", state="disabled", fg_color="#552222")
+                btn_cancel.configure(
+                    text="Cancelled" if status is TransferStatus.CANCELLED else "Failed",
+                    state="disabled",
+                    fg_color="#552222",
+                )
 
         # Thread-safe dispatch using .after()
-        def update_progress(value: float, status: int):
+        def update_progress(value: float, status: TransferStatus):
             self.after(0, _apply_update, value, status)
 
         return update_progress
