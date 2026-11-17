@@ -147,6 +147,11 @@ class NetworkManager:
 
     @log_time
     def init_udp_socks(self):
+        if getattr(self, "udp_socket", None) is not None:
+            try:
+                self.udp_socket.close()
+            except OSError:
+                pass
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -156,9 +161,25 @@ class NetworkManager:
 
     @log_time
     def close_udp_socks(self):
-        if getattr(self, "udp_socket", None):
-            self.udp_socket.close()
+        sock = getattr(self, "udp_socket", None)
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            finally:
+                setattr(self, "udp_socket", None)
+
+    def _get_udp_socket(self):
+        sock = getattr(self, "udp_socket", None)
+        if sock is None:
+            return None
+        try:
+            sock.fileno()
+        except OSError:
             setattr(self, "udp_socket", None)
+            return None
+        return sock
 
     @log_time   
     def close_sockets(self):
@@ -172,8 +193,12 @@ class NetworkManager:
         ):
             sock = getattr(self, name, None)
             if sock is not None:
-                sock.close()
-                setattr(self, name, None)
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                finally:
+                    setattr(self, name, None)
     
     @log_time
     def init_bd_socks(self):
@@ -218,18 +243,24 @@ class NetworkManager:
     # @log_time
     def broadcast(self, message) -> str:
         """Send discovery packet on every interface, and wait for a response"""
+        sock = self._get_udp_socket()
+        if sock is None:
+            return None, None
+
         for brd_addr, _ in self.INTERFACES:
             try:
-                self.udp_socket.sendto(message, (brd_addr , self.UDP_PORT))
+                sock.sendto(message, (brd_addr , self.UDP_PORT))
             except OSError:
                 pass # Interface may be down or unreachable
 
         try:
-            data, addr = self.udp_socket.recvfrom(1024)
+            data, addr = sock.recvfrom(1024)
             if not data:
                 return None, None
         except socket.timeout:
             raise
+        except OSError:
+            return None, None
 
         if data.startswith(message):
             return None, None
@@ -264,12 +295,18 @@ class NetworkManager:
     # @log_time
     def scan(self, msg, devices) -> tuple:
         """Scan for devices on the network."""
+        sock = self._get_udp_socket()
+        if sock is None:
+            return None, None
+
         try:
-            data, address = self.udp_socket.recvfrom(1024)
+            data, address = sock.recvfrom(1024)
             if not data:
                 return None, None
         except socket.timeout:
             raise socket.timeout
+        except OSError:
+            return None, None
 
         sender_ip = address[0]
         if sender_ip in self.own_ips:
@@ -281,7 +318,7 @@ class NetworkManager:
 
         if client_msg == DISCOVERY_REQUEST_TAG and client_name not in devices:
             try:
-                self.udp_socket.sendto(msg, address)
+                sock.sendto(msg, address)
             except OSError:
                 return None, None
 

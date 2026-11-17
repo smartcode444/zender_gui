@@ -118,6 +118,9 @@ class XenderController():
     @log_time
     def end_scan(self):
         self.end_scanning()
+        for thread in list(self._background_threads):
+            if thread is self.scan_thread and thread.is_alive():
+                thread.join(timeout=2.0)
         self.model.close_udp_socks()
         print("Scanning stoppped")
 
@@ -209,6 +212,9 @@ class XenderController():
     @log_time
     def end_broadcast(self): 
         self.end_broadcasting()
+        for thread in list(self._background_threads):
+            if thread is self.broadcast_thread and thread.is_alive():
+                thread.join(timeout=2.0)
         self.model.close_bd_socks()
         self.model.close_udp_socks()
         print("Broadcasting stopped")
@@ -348,8 +354,9 @@ class XenderController():
         self.end_connection()
         self.end_scan()
         self.end_broadcast()
-        self.model.close_sockets()
 
-        for thread in self._background_threads:
+        for thread in list(self._background_threads):
             if thread.is_alive():
                 thread.join(timeout=2.0)
+
+        self.model.close_sockets()
