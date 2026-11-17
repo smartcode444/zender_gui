@@ -81,6 +81,8 @@ class P2PApp(ctk.CTk):
 
     def show_main_selection(self):
         self.controller.shut_down()  # Ensure any ongoing scan/broadcast is stopped
+        self.controller.run_transfer_thd()
+        self.controller.run_receive_thd()
         self.show_view(MainSelectionView)
 
     def set_connected_user(self, username):
@@ -89,9 +91,7 @@ class P2PApp(ctk.CTk):
         self.show_view(ConnectedTransferView)
 
     def sc_connect(self, username, dev_addr):
-        self.controller.sc_connect(dev_addr)   # <- Intiate connection
-        # self.controller.is_connected.wait() # Wait until the connection is established
-        # self.set_connected_user(username)  # Update the UI to show the connected user
+        self.controller.sc_connect(username, dev_addr)  # <- Initiate connection
 
     def refresh_scan_devices(self, devices):
         self.frames[ScanningView].display_devices(devices)

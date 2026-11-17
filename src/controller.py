@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from src.model import NetworkManager
 import time
 import re
+from src.model import NetworkManager, build_discovery_response
 
 @dataclass
 class FileInfo:
@@ -55,6 +56,7 @@ class XenderController():
         self.is_broadcasting = threading.Event()
         self.is_connecting = threading.Event()
         self.transfer_lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._background_threads: list[threading.Thread] = []
         self.scan_thread: threading.Thread | None = None
         self.broadcast_thread: threading.Thread | None = None
@@ -63,31 +65,16 @@ class XenderController():
         self.scanned_devices = None
         self.scanners = None
 
+    def run_transfer_thd(self):
         self.transfer_worker_thread = threading.Thread(target=self._transfer_worker)
         self.transfer_worker_thread.start()
         self._background_threads.append(self.transfer_worker_thread)
 
+    def run_receive_thd(self):
         self.receive_worker_thread = threading.Thread(target=self._receive_worker)
         self.receive_worker_thread.start()
         self._background_threads.append(self.receive_worker_thread)
 
-    @log_time
-    def _is_closed_socket_error(self, error: Exception) -> bool:
-        return isinstance(error, OSError) and getattr(error, "winerror", None) == 10038
-
-    @log_time
-    def _stop_scan_discovery(self):
-        self.is_scanning.clear()
-        self.model.close_udp_socks()
-        if self.scan_thread and self.scan_thread.is_alive():
-            self.scan_thread.join(timeout=2.0)
-
-    @log_time
-    def _stop_broadcast_discovery(self):
-        self.is_broadcasting.clear()
-        self.model.close_udp_socks()
-        if self.broadcast_thread and self.broadcast_thread.is_alive():
-            self.broadcast_thread.join(timeout=2.0)
 
     # <- SCAN ->
 
@@ -96,7 +83,7 @@ class XenderController():
         devices: dict[str, tuple[str, int]] = {}
         print(f"\nScanning for devices... {len(devices)} found\n")
 
-        msg: bytes = b"I_SEE_U" + self.username.encode('utf-8')
+        msg: bytes = build_discovery_response(self.username)
         while self.is_scanning.is_set():
             try:
                 name: str
@@ -119,11 +106,12 @@ class XenderController():
 
     @log_time
     def run_scan(self):
-        self.model.close_sockets()
-        self.model.init_udp_socks()
-        self.set_scanning()
+        with self._state_lock:
+            self.model.close_sockets()
+            self.model.init_udp_socks()
+            self.set_scanning()
 
-        self.scan_thread = threading.Thread(target=self._scan_worker)
+        self.scan_thread = threading.Thread(target=self._scan_worker, daemon=True)
         self.scan_thread.start()
         self._background_threads.append(self.scan_thread)
 
@@ -134,18 +122,16 @@ class XenderController():
         print("Scanning stoppped")
 
     @log_time
-    def scan_connect(self, addr):
-        dev_ip: str = addr[0] # Ip address of device to intiate connnection with
+    def scan_connect(self, peer_name, addr):
+        dev_ip: str = addr[0]  # Ip address of device to initiate connection with
         print("Addr value in sc_connect:", addr)
-        self._stop_scan_discovery()
         while self.is_connecting.is_set():
             try:
                 self.model.sc_connect(dev_ip)
-                self.end_connecting()  # End the connecting state since the connection was successful
-                self.end_scan()        # End the scanning state since the connection was successful
-                self.set_connection()  # Connectin established, set the connection state
-                self.app.after(0, self.app.set_connected_user(dev_ip))
-                # self.app.after(0, self.app.set_connected_user(next(k for k, v in self.scanned_devices if v == addr))) # Update the UI to show the connected user
+                self.end_connecting()
+                self.end_scan()
+                self.set_connection()
+                self.app.after(0, self.app.set_connected_user, peer_name)
                 print("Scanner connected!")
                 break
             except socket.timeout:
@@ -154,19 +140,27 @@ class XenderController():
                 print(f"[!] Error connecting to: {e}.")
                 self.end_connecting()
                 break
-                # TODO: Consider adding a retry mechanism or user feedback for connection failures.
 
-    @log_time  
-    def sc_connect(self, dev_addr=None):
-        self.model.init_sc_socks()
-        self.set_connecting()
-        
+    @log_time
+    def sc_connect(self, peer_name=None, dev_addr=None):
+        if dev_addr is None and isinstance(peer_name, tuple):
+            dev_addr = peer_name
+            peer_name = None
+
+        with self._state_lock:
+            self.model.init_sc_socks()
+            self.set_connecting()
+
         if dev_addr is None:
             print("No device address provided for connection.")
             self.end_connecting()
             return
-        
-        sc_conn_thread = threading.Thread(target=self.scan_connect, args=(dev_addr, ))
+
+        sc_conn_thread = threading.Thread(
+            target=self.scan_connect,
+            args=(peer_name or dev_addr[0], dev_addr),
+            daemon=True,
+        )
         sc_conn_thread.start()
         self._background_threads.append(sc_conn_thread)
 
@@ -195,29 +189,33 @@ class XenderController():
 
     @log_time
     def run_broadcast(self):
-        self.model.close_sockets()  # Close any existing broadcast sockets before initializing new ones
-        self.model.init_udp_socks()
-        self.set_broadcasting()
+        with self._state_lock:
+            self.model.close_sockets()
+            self.model.init_udp_socks()
+            self.set_broadcasting()
 
-        self.broadcast_thread = threading.Thread(target=self._broadcast_worker)
+        self.broadcast_thread = threading.Thread(target=self._broadcast_worker, daemon=True)
         self.broadcast_thread.start()
         self._background_threads.append(self.broadcast_thread)
 
-        self.set_connecting()
-        bd_conn_thread = threading.Thread(target=self.broadcast_connect)
+        with self._state_lock:
+            self.model.init_bd_socks()
+            self.set_connecting()
+
+        bd_conn_thread = threading.Thread(target=self.broadcast_connect, daemon=True)
         bd_conn_thread.start()
         self._background_threads.append(bd_conn_thread)
 
     @log_time
     def end_broadcast(self): 
         self.end_broadcasting()
+        self.model.close_bd_socks()
         self.model.close_udp_socks()
         print("Broadcasting stopped")
 
     @log_time
     def broadcast_connect(self):
         print("Broacaster is connecting...")
-        self._stop_broadcast_discovery()
         while self.is_connecting.is_set():
             try:
                 self.model.bd_connect()
@@ -225,7 +223,8 @@ class XenderController():
                 self.end_broadcast()     # End the broadcasting state since the connection was successful
                 self.set_connection()    # Connection established, set the connection state
                 print("Broadcaster connected!")
-                self.app.after(0, self.app.set_connected_user, self.scanners[0]) # Update the UI to show the connected user
+                peer_name = self.scanners[0] if self.scanners else "Unknown peer"
+                self.app.after(0, self.app.set_connected_user, peer_name)
                 break
 
             except socket.timeout:
@@ -233,6 +232,7 @@ class XenderController():
             except Exception as e:
                 print(f"[!] Error connecting to: {e}.")
                 self.end_connecting()
+
     @log_time
     def set_scanning(self):
         self.is_scanning.set()
@@ -315,7 +315,8 @@ class XenderController():
 
     @log_time
     def _receive_worker(self):
-        downloads_path: Path = Path.home() / "Downloads"
+        downloads_path: Path = Path.home() / "Downloads" / "Zender"
+        downloads_path.mkdir(parents=True, exist_ok=True)
         while self.running:
             if not self.is_connected.wait(timeout=1):
                 continue
@@ -343,10 +344,10 @@ class XenderController():
     def shut_down(self):
         print("Shutting down...")
         self.running = False
-        self.end_scan()
-        self.end_broadcast()
         self.end_connecting()
         self.end_connection()
+        self.end_scan()
+        self.end_broadcast()
         self.model.close_sockets()
 
         for thread in self._background_threads:

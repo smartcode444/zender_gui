@@ -4,6 +4,7 @@ import threading
 import struct
 import psutil
 import os
+from pathlib import Path
 from enum import IntEnum
 import time
 import re
@@ -43,6 +44,79 @@ class TransferStatus(IntEnum):
     LOADING = 1
     ERROR = 2
     CANCELLED = 3
+
+
+DISCOVERY_REQUEST_TAG = "XENDER_DISCOVERY_REQUEST"
+DISCOVERY_RESPONSE_PREFIX = b"I_SEE_U"
+CANCEL_REQUEST_ID = 0x03
+FILE_TRANSFER_TAG = b"F"
+FOLDER_TRANSFER_TAG = b"D"
+
+
+def build_discovery_request(username: str) -> bytes:
+    username_bytes = username.encode("utf-8")
+    return bytes([len(username_bytes)]) + username_bytes + DISCOVERY_REQUEST_TAG.encode("utf-8")
+
+
+def build_discovery_response(username: str) -> bytes:
+    return DISCOVERY_RESPONSE_PREFIX + username.encode("utf-8")
+
+
+def decode_discovery_packet(data: bytes):
+    if not data:
+        return None, None
+
+    username_len = data[0]
+    if not 0 < username_len <= len(data) - 1:
+        return None, None
+
+    username = data[1:1 + username_len].decode("utf-8", errors="strict")
+    payload = data[1 + username_len:]
+    payload_text = payload.decode("utf-8", errors="strict")
+    return username, payload_text
+
+
+def encode_cancel_packet(bytes_transferred: int) -> bytes:
+    return bytes([CANCEL_REQUEST_ID]) + int(bytes_transferred).to_bytes(8, "big")
+
+
+def decode_cancel_packet(packet: bytes) -> int:
+    if len(packet) != 9 or packet[0] != CANCEL_REQUEST_ID:
+        raise ValueError("Invalid cancel packet")
+    return int.from_bytes(packet[1:], "big")
+
+
+def encode_file_header(name: str, file_size: int) -> bytes:
+    name_bytes = name.encode("utf-8")
+    return len(name_bytes).to_bytes(4, "big") + name_bytes + file_size.to_bytes(8, "big")
+
+
+def encode_folder_header(folder_name: str, folder_size: int, file_count: int) -> bytes:
+    folder_name_bytes = folder_name.encode("utf-8")
+    return (
+        folder_size.to_bytes(8, "big")
+        + len(folder_name_bytes).to_bytes(4, "big")
+        + folder_name_bytes
+        + file_count.to_bytes(4, "big")
+    )
+
+
+def resolve_unique_path(path: str | os.PathLike[str]) -> Path:
+    """Return the original path or a numbered collision-safe alternate."""
+    candidate = Path(path)
+    if not candidate.exists():
+        return candidate
+
+    stem = candidate.stem or candidate.name
+    suffix = candidate.suffix
+    counter = 1
+    while True:
+        next_name = f"{stem} ({counter}){suffix}" if suffix else f"{stem} ({counter})"
+        next_candidate = candidate.with_name(next_name)
+        if not next_candidate.exists():
+            return next_candidate
+        counter += 1
+
 
 class NetworkManager:
     @log_time
@@ -141,7 +215,7 @@ class NetworkManager:
                 sock.close()
                 setattr(self, name, None)
 
-    @log_time
+    # @log_time
     def broadcast(self, message) -> str:
         """Send discovery packet on every interface, and wait for a response"""
         for brd_addr, _ in self.INTERFACES:
@@ -157,12 +231,11 @@ class NetworkManager:
         except socket.timeout:
             raise
 
-        # Filter out echoes of my own broadcast
         if data.startswith(message):
             return None, None
 
-        decoded = data.decode('utf-8').strip()   
-        if decoded[:7] == "I_SEE_U":
+        decoded = data.decode('utf-8', errors='ignore').strip()
+        if decoded.startswith('I_SEE_U'):
             device_name = decoded[7:]
             return device_name, addr
 
@@ -188,7 +261,7 @@ class NetworkManager:
         except Exception as e:
             raise e
 
-    @log_time
+    # @log_time
     def scan(self, msg, devices) -> tuple:
         """Scan for devices on the network."""
         try:
@@ -202,22 +275,16 @@ class NetworkManager:
         if sender_ip in self.own_ips:
             return None, None
 
-        username_len  = data[0]
-        if username_len > len(data) - 1:
-            return None, None
-        
-        try:
-            client_name   = data[1:1+username_len].decode('utf-8')
-            client_msg    = data[1+username_len:].decode('utf-8')
-        except UnicodeDecodeError as e:
+        client_name, client_msg = decode_discovery_packet(data)
+        if client_name is None:
             return None, None
 
-        if client_msg == "XENDER_DISCOVERY_REQUEST" and client_name not in devices:
+        if client_msg == DISCOVERY_REQUEST_TAG and client_name not in devices:
             try:
-                self.udp_socket.sendto(msg, (address))
+                self.udp_socket.sendto(msg, address)
             except OSError:
                 return None, None
-            
+
             return client_name, address
 
         return None, None
@@ -257,39 +324,63 @@ class NetworkManager:
     # <- SEND ->
 
     # Sender side - on cancel, report exactly how many bytes it pushed into the socket
+    def _send_exact(self, sock, payload: bytes):
+        view = memoryview(payload)
+        while view:
+            sent = sock.send(view)
+            if sent == 0:
+                raise ConnectionError("Socket closed while writing payload")
+            view = view[sent:]
+
+    def _recv_exact(self, sock, size: int, timeout: float | None = None):
+        if timeout is not None:
+            sock.settimeout(timeout)
+
+        chunks = []
+        remaining = size
+        while remaining > 0:
+            try:
+                chunk = sock.recv(remaining)
+            except socket.timeout:
+                raise
+            except OSError:
+                raise
+
+            if not chunk:
+                raise ConnectionError("Socket closed while reading exact-length payload")
+
+            chunks.append(chunk)
+            remaining -= len(chunk)
+
+        return b"".join(chunks)
+
     @log_time
     def sender_notify_cancel(self, local_sent_so_far: int):
-        """Send a CANCEL byte (0x03) and the amount of bytes pushed to the socket
-        to the peer over the control channel.
-        """
+        """Send a CANCEL byte (0x03) and the amount of bytes pushed to the socket."""
         self.clear_cancel_send_flag()
         try:
-            # [Ox03][8B bytes_sent_into_socket]
-            self.ctrl_conn.sendall(b'\x03' + local_sent_so_far.to_bytes(8, 'big'))
+            self.ctrl_conn.sendall(encode_cancel_packet(local_sent_so_far))
         except OSError:
             pass
 
     @log_time
     def sender_handle_cancel(self, local_sent_so_far: int):
         self.clear_cancel_send_flag()
-        cmd = self.ctrl_conn.recv(1)
-        if cmd == b'\x03':
-            count_bytes = b''
-            while len(count_bytes) < 8:
-                chunk = self.ctrl_conn.recv(8 - len(count_bytes))
-                if not chunk:
-                    break
-                count_bytes += chunk
+        try:
+            cmd = self._recv_exact(self.ctrl_conn, 1, timeout=1.0)
+            if cmd != b'\x03':
+                return
 
-            peer_receiver_received = int.from_bytes(count_bytes, 'big')
-
-            gap = local_sent_so_far - peer_receiver_received
+            peer_received = decode_cancel_packet(self._recv_exact(self.ctrl_conn, 9, timeout=1.0))
+            gap = max(0, local_sent_so_far - peer_received)
             discarded = 0
             while discarded < gap:
                 chunk = self.tcp_conn.recv(min(65536, gap - discarded))
                 if not chunk:
                     break
                 discarded += len(chunk)
+        except (ConnectionError, OSError, socket.timeout, ValueError):
+            return
 
     @log_time
     def receiver_notify_cancel(self, local_received_so_far: int):
@@ -299,35 +390,25 @@ class NetworkManager:
             return
 
         try:
-            # [0x03][8B bytes_received_so_far]
-            self.ctrl_conn.sendall(b'\x03' + local_received_so_far.to_bytes(8, 'big'))
+            self.ctrl_conn.sendall(encode_cancel_packet(local_received_so_far))
         except OSError:
             pass
 
     # Receiver side - Receives cancel signal 
     @log_time
     def receiver_handle_cancel(self, local_receiver_received, timeout: float = 1.0):
-        """Drain exactly remaining bytes from the data socket and discard"""
+        """Drain exactly remaining bytes from the data socket and discard."""
         self.clear_cancel_recv_flag()
         try:
-            self.ctrl_conn.settimeout(timeout) # Handle cancel process should be done within a second
+            self.ctrl_conn.settimeout(timeout)
         except OSError:
-            # If the socket is closed or doesn't support timeout, just return
             return
 
         try:
-            cmd = self.ctrl_conn.recv(1)
+            cmd = self._recv_exact(self.ctrl_conn, 1, timeout=timeout)
             if cmd == b'\x03':
-                count_bytes = b''
-                while len(count_bytes) < 8:
-                    chunk = self.ctrl_conn.recv(8 - len(count_bytes))
-                    if not chunk:
-                        break
-                    count_bytes += chunk
-
-                peer_sender_sent = int.from_bytes(count_bytes, 'big')
-
-                gap = peer_sender_sent - local_receiver_received
+                peer_sender_sent = decode_cancel_packet(self._recv_exact(self.ctrl_conn, 9, timeout=timeout))
+                gap = max(0, peer_sender_sent - local_receiver_received)
                 discarded = 0
                 while discarded < gap:
                     chunk = self.tcp_conn.recv(min(65536, gap - discarded))
@@ -335,10 +416,12 @@ class NetworkManager:
                         break
                     discarded += len(chunk)
             self.ctrl_conn.settimeout(None)
-
-        except Exception:
-            self.ctrl_conn.settimeout(None)
-            raise
+        except (ConnectionError, OSError, socket.timeout, ValueError):
+            try:
+                self.ctrl_conn.settimeout(None)
+            except Exception:
+                pass
+            return
     
     @log_time
     def sender_request_cancel(self, local_sent_so_far: int):
@@ -379,15 +462,11 @@ class NetworkManager:
         status = TransferStatus.LOADING
 
         filesize = os.path.getsize(path)
-        namebytes = header_name.encode('utf-8')
-        # build header: [4B name_len][name][8B file_size]
-        header = len(namebytes).to_bytes(4, 'big') + namebytes + filesize.to_bytes(8, 'big')
+        header = encode_file_header(header_name, filesize)
 
         try:
-            self.tcp_conn.sendall(b'F')
-
-            # send header (blocking)
-            self.tcp_conn.sendall(header)
+            self._send_exact(self.tcp_conn, FILE_TRANSFER_TAG)
+            self._send_exact(self.tcp_conn, header)
 
             sent = 0
             last_reported = 0
@@ -417,12 +496,12 @@ class NetworkManager:
                         break
 
                     try:
-                        self.tcp_conn.sendall(chunk)
+                        self._send_exact(self.tcp_conn, chunk)
                     except (OSError, BlockingIOError) as e:
                         print("Network error - connection lost")
                         status = TransferStatus.ERROR
-                        progress_callback(sent / max(1, filesize), status)
-                        # notify peer if possible then re-raise
+                        if progress_callback is not None:
+                            progress_callback(sent / max(1, filesize), status)
                         try:
                             self.sender_notify_cancel(sent)
                             return
@@ -431,12 +510,13 @@ class NetworkManager:
                         raise RuntimeError(f"[!] Error while sending '{name}': {e}")
 
                     sent += len(chunk)
-                    if sent - last_reported >= 1048576 or sent == filesize:
+                    if progress_callback is not None and (sent - last_reported >= 1048576 or sent == filesize):
                         progress_callback(sent / max(1, filesize), status)
                         last_reported = sent
 
             status = TransferStatus.SUCCESS
-            progress_callback(1.0, status)
+            if progress_callback is not None:
+                progress_callback(1.0, status)
 
         finally:
             try:
@@ -463,11 +543,10 @@ class NetworkManager:
                 files_list.append((full_path, rel_path))
                 folder_size += os.path.getsize(full_path)
 
-        # Mark this transfer as a folder, then send folder size to receiver
-        self.tcp_conn.sendall(b'D')
-        self.tcp_conn.sendall(folder_size.to_bytes(8, 'big'))
+        # Mark this transfer as a folder, then send folder metadata to receiver
+        self._send_exact(self.tcp_conn, FOLDER_TRANSFER_TAG)
+        self._send_exact(self.tcp_conn, encode_folder_header(base_foldername, folder_size, len(files_list)))
 
-        # Informal progress: iterate through each file and send as _send_file
         total_sent = 0
         for full_path, rel_path in files_list:
             if self._cancel_sending_flag.is_set():
@@ -547,8 +626,10 @@ class NetworkManager:
             progress_callback = self.controller.register_incoming_transfer(filename, filesize)
 
             # Receive file
-            filepath = os.path.join(dest_folder, filename)
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            filepath = str(resolve_unique_path(os.path.join(dest_folder, filename)))
+            dest_dir = os.path.dirname(filepath)
+            if dest_dir:
+                os.makedirs(dest_dir, exist_ok=True)
             with open(filepath, "wb") as f:
                 last_reported = 0
                 while received < filesize:
@@ -624,21 +705,26 @@ class NetworkManager:
             return buf
 
         folder_size = int.from_bytes(recv_exact(8), 'big')
+        folder_name_len = int.from_bytes(recv_exact(4), 'big')
+        folder_name = recv_exact(folder_name_len).decode('utf-8')
+        file_count = int.from_bytes(recv_exact(4), 'big')
 
-        # Need - filename, - received_bytes
-        received_folder = 0 # Total bytes received in sent folder
-        while received_folder < folder_size: 
+        received_folder = 0
+        remaining_files = file_count
+        while remaining_files > 0:
             try:
                 path_name_len = int.from_bytes(recv_exact(4), 'big')
                 relpath = (recv_exact(path_name_len)).decode('utf-8')
 
                 filesize = int.from_bytes(recv_exact(8), 'big')
-                folder_name = os.path.basename(relpath)
-                progress_callback = self.controller.register_incoming_transfer(folder_name, filesize)
+                folder_entry_name = os.path.basename(relpath)
+                progress_callback = self.controller.register_incoming_transfer(folder_entry_name, filesize)
 
                 # Receive file
-                filepath = os.path.join(dest_folder, relpath)
-                os.makedirs(os.path.dirname(filepath), exist_ok=True) # Recreate directory structure in receiver end
+                filepath = str(resolve_unique_path(os.path.join(dest_folder, relpath)))
+                dest_dir = os.path.dirname(filepath)
+                if dest_dir:
+                    os.makedirs(dest_dir, exist_ok=True)  # Recreate directory structure in receiver end
 
                 with open(filepath, "wb") as f:
                     received_file = 0
@@ -667,11 +753,12 @@ class NetworkManager:
                                 raise ConnectionError("\n[!] Connection lost mid-transfer")
                             f.write(chunk)
                             received_file += len(chunk)
-                            received_folder += filesize
+                            received_folder += len(chunk)
                             if received_file - last_reported >= 1048576 or received_file == filesize:
                                 progress_callback(received_folder / max(1, folder_size), status)
-                                last_reported = received_file          
+                                last_reported = received_file
 
+                remaining_files -= 1
                 status = TransferStatus.SUCCESS
                 progress_callback(received_folder / max(1, folder_size), status)
 
@@ -720,9 +807,9 @@ class NetworkManager:
             return buf
 
         transfer_kind = recv_exact(1)
-        if transfer_kind == b'F':
+        if transfer_kind == FILE_TRANSFER_TAG:
             return self._receive_file(dest_folder)
-        if transfer_kind == b'D':
+        if transfer_kind == FOLDER_TRANSFER_TAG:
             return self._receive_folder(dest_folder)
 
         raise RuntimeError(f"Unknown transfer type: {transfer_kind!r}")
