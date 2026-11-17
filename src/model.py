@@ -5,7 +5,38 @@ import struct
 import psutil
 import os
 from enum import IntEnum
+import time
+import re
 
+def log_time(func):
+    def _log(*args, **kwargs):
+        # 1. Clean up arguments string by stripping out messy hex memory addresses
+        kwargs_str = f", {kwargs}" if kwargs else ""
+        args_str = ", ".join(map(str, args))
+        raw_call = f"{func.__name__}({args_str}{kwargs_str})"
+        
+        # Regex replaces "<class_name object at 0x...>" with "class_name()"
+        clean_call = re.sub(r"<([^ ]+)\s+object\s+at\s+0x[0-9a-fA-F]+>", r"\1()", raw_call)
+        
+        # 2. Enforce a safe max length (e.g., 60 chars) so it never overflows the column
+        MAX_COL_WIDTH = 60
+        if len(clean_call) > MAX_COL_WIDTH:
+            func_call = clean_call[:MAX_COL_WIDTH-3] + "..."
+        else:
+            func_call = clean_call
+            
+        time_start = time.perf_counter()
+        result = func(*args, **kwargs)
+        time_end = time.perf_counter()
+        
+        elapsed_time = f"{time_end - time_start:.6f}s"
+        
+        # 3. Print with matching column widths
+        # Adjusting width from 45 to 60 to fit your network method names
+        print(f"{func_call:<60} | {str(result):<15} | {elapsed_time:>10}")
+        
+        return result
+    return _log
 
 class TransferStatus(IntEnum):
     SUCCESS = 0
@@ -14,6 +45,7 @@ class TransferStatus(IntEnum):
     CANCELLED = 3
 
 class NetworkManager:
+    @log_time
     def __init__(self, controller, username: str):
         self.controller        = controller
 
@@ -29,12 +61,6 @@ class NetworkManager:
 
         self.name              = username
 
-        # self.tcp_conn_server   = None
-        # self.tcp_recv_server   = None 
-
-        # self.tcp_conn          = None
-        # self.tcp_recv          = None
-
         self.tcp_server        = None
         self.ctrl_server       = None
         self.tcp_conn          = None 
@@ -45,6 +71,8 @@ class NetworkManager:
 
         self.selected_mode     = None
 
+    @log_time
+    def init_udp_socks(self):
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -52,12 +80,19 @@ class NetworkManager:
         self.udp_socket.bind(('', self.UDP_PORT))
         self.udp_socket.settimeout(1.0)
 
+    @log_time
+    def close_udp_socks(self):
+        if getattr(self, "udp_socket", None):
+            self.udp_socket.close()
+            setattr(self, "udp_socket", None)
+
+    @log_time   
     def close_sockets(self):
         """Close all sockets."""
         for name in (
             "tcp_conn",
-            "tcp_server",
             "ctrl_conn",
+            "tcp_server",
             "ctrl_server",
             "udp_socket",
         ):
@@ -65,7 +100,8 @@ class NetworkManager:
             if sock is not None:
                 sock.close()
                 setattr(self, name, None)
-
+    
+    @log_time
     def init_bd_socks(self):
         """Intialize tcp sockets for broadcaster."""
         self.selected_mode = "broadcast"
@@ -80,6 +116,14 @@ class NetworkManager:
         self.tcp_server.bind(('', self.TCP_PORT))
         self.tcp_server.listen(1)
 
+    @log_time
+    def init_sc_socks(self):
+        """Intialize tcp sockets for scanner."""
+        self.selected_mode = "scan"
+        self.tcp_conn  = socket.socket(socket.AF_INET, socket.SOCK_STREAM)        
+        self.ctrl_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
+
+    @log_time
     def close_bd_socks(self):
         """Close broadcast sockets."""
         for name in ("tcp_server", "ctrl_server"):
@@ -88,6 +132,16 @@ class NetworkManager:
                 sock.close()
                 setattr(self, name, None)
 
+    @log_time
+    def close_transfer_socks(self):
+        """Close transfer sockets."""
+        for name in ("tcp_conn", "ctrl_conn"):
+            sock = getattr(self, name, None)
+            if sock is not None:
+                sock.close()
+                setattr(self, name, None)
+
+    @log_time
     def broadcast(self, message) -> str:
         """Send discovery packet on every interface, and wait for a response"""
         for brd_addr, _ in self.INTERFACES:
@@ -100,7 +154,6 @@ class NetworkManager:
             data, addr = self.udp_socket.recvfrom(1024)
             if not data:
                 return None, None
-            # print(data)
         except socket.timeout:
             raise
 
@@ -112,12 +165,10 @@ class NetworkManager:
         if decoded[:7] == "I_SEE_U":
             device_name = decoded[7:]
             return device_name, addr
-        # elif decoded[-24:] == "XENDER_DISCOVERY_REQUEST":
-        #     return "smartcode", addr
 
         return None, None
 
-    
+    @log_time
     def bd_connect(self):
         """Accept all three channels for one incoming connection attempt."""
         listeners = (
@@ -128,43 +179,22 @@ class NetworkManager:
             listener.settimeout(self.CONNECTION_TIMEOUT)
 
         try:
-            self.tcp_conn, _ = self.tcp_server.accept()
+            self.tcp_conn,  _ = self.tcp_server.accept()
             self.ctrl_conn, _ = self.ctrl_server.accept()
 
         except socket.timeout:
-            self.close_sockets()
-            self.init_bd_socks()
             raise socket.timeout 
     
         except Exception as e:
-            self.close_sockets()
             raise e
 
-        for listener in listeners:
-            listener.close()
-    
-
-    def init_scan_socks(self):
-        """Intialize tcp sockets for scanner."""
-        self.selected_mode = "scan"
-        self.tcp_conn  = socket.socket(socket.AF_INET, socket.SOCK_STREAM)        
-        self.ctrl_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
-
-    def close_scan_socks(self):
-        """Close scanning sockets."""
-        for name in ("tcp_conn", "ctrl_conn"):
-            sock = getattr(self, name, None)
-            if sock is not None:
-                sock.close()
-                setattr(self, name, None)
-    
+    @log_time
     def scan(self, msg, devices) -> tuple:
         """Scan for devices on the network."""
         try:
             data, address = self.udp_socket.recvfrom(1024)
             if not data:
                 return None, None
-            # print(f"Data: {data}") 
         except socket.timeout:
             raise socket.timeout
 
@@ -192,13 +222,10 @@ class NetworkManager:
 
         return None, None
 
+    @log_time
     def sc_connect(self, device_addr):
         print("Device address in sc_connect:", device_addr)
-        # A failed multi-channel attempt can leave one or more sockets closed
-        # or already connected. Always start the next attempt with new sockets.
         try:
-            self.close_sockets()
-            self.init_scan_socks()
             for connection in (self.tcp_conn, self.ctrl_conn):
                 connection.settimeout(self.CONNECTION_TIMEOUT)
 
@@ -206,29 +233,31 @@ class NetworkManager:
             self.ctrl_conn.connect((device_addr, self.CTRL_PORT))
 
         except socket.timeout:
-            self.close_sockets()
             raise socket.timeout
 
         except Exception as e:
-            self.close_sockets()
             raise e
 
-
+    @log_time
     def set_cancel_recv_flag(self):
         self._cancel_receiving_flag.set()
 
+    @log_time
     def clear_cancel_recv_flag(self):
         self._cancel_receiving_flag.clear()
 
+    @log_time
     def set_cancel_send_flag(self):
         self._cancel_sending_flag.set()
-    
+
+    @log_time
     def clear_cancel_send_flag(self):
         self._cancel_sending_flag.clear()
 
     # <- SEND ->
 
     # Sender side - on cancel, report exactly how many bytes it pushed into the socket
+    @log_time
     def sender_notify_cancel(self, local_sent_so_far: int):
         """Send a CANCEL byte (0x03) and the amount of bytes pushed to the socket
         to the peer over the control channel.
@@ -240,6 +269,7 @@ class NetworkManager:
         except OSError:
             pass
 
+    @log_time
     def sender_handle_cancel(self, local_sent_so_far: int):
         self.clear_cancel_send_flag()
         cmd = self.ctrl_conn.recv(1)
@@ -261,7 +291,7 @@ class NetworkManager:
                     break
                 discarded += len(chunk)
 
-
+    @log_time
     def receiver_notify_cancel(self, local_received_so_far: int):
         """Send a CANCEL packet to the sender with how many bytes were received."""
         self.clear_cancel_recv_flag()
@@ -275,6 +305,7 @@ class NetworkManager:
             pass
 
     # Receiver side - Receives cancel signal 
+    @log_time
     def receiver_handle_cancel(self, local_receiver_received, timeout: float = 1.0):
         """Drain exactly remaining bytes from the data socket and discard"""
         self.clear_cancel_recv_flag()
@@ -308,18 +339,20 @@ class NetworkManager:
         except Exception:
             self.ctrl_conn.settimeout(None)
             raise
-
+    
+    @log_time
     def sender_request_cancel(self, local_sent_so_far: int):
         """Public helper: mark this transfer as cancelled and notify the receiver."""
         self.set_cancel_send_flag()
         self.sender_notify_cancel(local_sent_so_far)
 
+    @log_time
     def receiver_request_cancel(self, local_received_so_far: int):
         """Public helper: mark this transfer as cancelled and notify the receiver."""
         self.set_cancel_recv_flag()
         self.receiver_notify_cancel(local_received_so_far)
 
-
+    @log_time
     def _send_file(self, name, path, progress_callback, rel_path: str = None):
         """Send a single file over the data socket.
         Arguments:
@@ -412,7 +445,7 @@ class NetworkManager:
             except Exception as e:
                 pass
 
-            
+    @log_time
     def _send_folder(self, folder_path, progress_callback):
         self.ctrl_conn.settimeout(None)
         self.tcp_conn.settimeout(None)
@@ -460,15 +493,17 @@ class NetworkManager:
         # finished sending entire folder
         return True
 
+    @log_time
     def send_folder(self, folder_path, progress_callback):
         return self._send_folder(folder_path, progress_callback)
 
+    @log_time
     def send_file(self, path, name=None, progress_callback=None):
         if name is None:
             name = os.path.basename(path)
         return self._send_file(name, path, progress_callback)
 
-
+    @log_time
     def _receive_file(self, dest_folder):
         """Receive files over the data socket. 
         Shuts down socket on cancellation so sender unblocks."""
@@ -555,7 +590,7 @@ class NetworkManager:
                 pass
             raise
 
-        
+    @log_time    
     def _receive_folder(self, dest_folder):
         """Receive folders"""
         self.ctrl_conn.settimeout(None)
@@ -649,12 +684,15 @@ class NetworkManager:
                     pass
                 raise
 
+    @log_time
     def receive_folder(self, dest_folder):
         return self._receive_folder(dest_folder)
     
+    @log_time
     def receive_file(self, dest_folder):
         return self._receive_file(dest_folder)
 
+    @log_time
     def receive_transfer(self, dest_folder):
         """Read the next transfer type and dispatch to the matching receiver."""
         def recv_exact(n: int) -> bytes:
@@ -689,6 +727,7 @@ class NetworkManager:
 
         raise RuntimeError(f"Unknown transfer type: {transfer_kind!r}")
 
+@log_time
 def get_all_broadcast_addresses():
     """
     Returns a list of (broadcast_address, own_ip) for every

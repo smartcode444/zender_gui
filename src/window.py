@@ -80,9 +80,7 @@ class P2PApp(ctk.CTk):
             frame.on_show()
 
     def show_main_selection(self):
-        self.controller.end_broadcast()
-        self.controller.end_scan()
-        self.controller.end_connecting()
+        self.controller.shut_down()  # Ensure any ongoing scan/broadcast is stopped
         self.show_view(MainSelectionView)
 
     def set_connected_user(self, username):
@@ -90,8 +88,8 @@ class P2PApp(ctk.CTk):
         transfer_view.update_header(username)
         self.show_view(ConnectedTransferView)
 
-    def connect(self, username, dev_addr):
-        self.controller.connect(dev_addr)   # <- Intiate connection
+    def sc_connect(self, username, dev_addr):
+        self.controller.sc_connect(dev_addr)   # <- Intiate connection
         # self.controller.is_connected.wait() # Wait until the connection is established
         # self.set_connected_user(username)  # Update the UI to show the connected user
 
@@ -251,7 +249,7 @@ class ScanningView(ctk.CTkFrame):
             else:
                 item["button"].configure(state="disabled", fg_color="#0082FC")
                 # item["frame"].configure(text="Connecting...", fg_color="#4C02F8")
-        self.after(600, lambda: self.app.connect(dev_name, dev_addr))
+        self.after(600, lambda: self.app.sc_connect(dev_name, dev_addr))
         
 
 # -------------------------------------------------------------
