@@ -290,22 +290,21 @@ class XenderController():
                 self.transfer_queue.task_done()
                 break
 
-            with self.transfer_lock:
-                try:
-                    payload_path = Path(payload_path)
-                    if transfer_kind == "file":
-                        name = os.path.basename(payload_path)
-                        self.model._send_file(name, payload_path, progress_callback, rel_path=None)
-                    elif transfer_kind == "folder":
-                        norm_folder_path = os.path.normpath(payload_path)
-                        self.model.send_folder(norm_folder_path, progress_callback)
-                    else:
-                        raise ValueError(f"Unknown transfer kind: {transfer_kind}")
-                except Exception as e:
-                    if self.running:
-                        print(f"Error sending {transfer_kind}: {e}")
-                finally:
-                    self.transfer_queue.task_done()
+            try:
+                payload_path = Path(payload_path)
+                if transfer_kind == "file":
+                    name = os.path.basename(payload_path)
+                    self.model._send_file(name, payload_path, progress_callback, rel_path=None)
+                elif transfer_kind == "folder":
+                    norm_folder_path = os.path.normpath(payload_path)
+                    self.model.send_folder(norm_folder_path, progress_callback)
+                else:
+                    raise ValueError(f"Unknown transfer kind: {transfer_kind}")
+            except Exception as e:
+                if self.running:
+                    print(f"Error sending {transfer_kind}: {e}")
+            finally:
+                self.transfer_queue.task_done()
 
     @log_time
     def send_file(self, path, progress_callback):
@@ -327,16 +326,13 @@ class XenderController():
             if not self.is_connected.wait(timeout=1):
                 continue
 
-            with self.transfer_lock:
-                try:
-                    self.model.receive_transfer(downloads_path)
-
-                except socket.timeout:
-                    continue
-                
-                except Exception as e:
-                    if self.running:
-                        print(f"Error receiving transfer: {e}")
+            try:
+                self.model.receive_transfer(downloads_path)
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if self.running:
+                    print(f"Error receiving transfer: {e}")
 
     @log_time
     def cancel_sender_transfer(self, sent_so_far: int = 0):

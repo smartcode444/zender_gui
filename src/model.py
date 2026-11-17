@@ -123,9 +123,9 @@ class NetworkManager:
     def __init__(self, controller, username: str):
         self.controller        = controller
 
-        self.UDP_PORT          = 5017
-        self.TCP_PORT          = 5018
-        self.CTRL_PORT         = 5019
+        self.UDP_PORT          = 40017
+        self.TCP_PORT          = 40018
+        self.CTRL_PORT         = 40019
         self.CONNECTION_TIMEOUT = 10.0
         self.INTERFACES        = get_all_broadcast_addresses()
         self.own_ips           = {ip for _, ip in self.INTERFACES}
@@ -547,7 +547,7 @@ class NetworkManager:
                         raise RuntimeError(f"[!] Error while sending '{name}': {e}")
 
                     sent += len(chunk)
-                    if progress_callback is not None and (sent - last_reported >= 1048576 or sent == filesize):
+                    if progress_callback is not None and (sent - last_reported >= 65536 or sent == filesize):
                         progress_callback(sent / max(1, filesize), status)
                         last_reported = sent
 
@@ -692,7 +692,7 @@ class NetworkManager:
                             raise ConnectionError("\n[!] Connection lost mid-transfer")
                         f.write(chunk)
                         received += len(chunk)
-                        if received - last_reported >= 1048576 or received == filesize:
+                        if received - last_reported >= 65536 or received == filesize:
                             progress_callback(received / max(1, filesize), status)
                             last_reported = received
 
